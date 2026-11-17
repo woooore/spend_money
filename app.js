@@ -18,6 +18,11 @@
     try { const d = JSON.parse(localStorage.getItem(KEY)); if (d) return d; } catch (e) {}
     return { txs: [], cards: [], settings: { salary: 0, budget: 0 } };
   }
+  function applyTheme() {
+    const t = S.settings.theme;
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  }
+  applyTheme();
   const save = () => localStorage.setItem(KEY, JSON.stringify(S));
   const mKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
   const curKey = () => mKey(cur);
@@ -190,7 +195,12 @@
 
   function renderSettings() {
     const el = $('#tab-settings');
-    el.innerHTML = `<div class="box"><h3>기본 정보</h3>
+    el.innerHTML = `<div class="box"><h3>화면 모드</h3><div class="seg" id="themeSeg">
+      <button data-th="auto" class="${!S.settings.theme || S.settings.theme === 'auto' ? 'on i' : ''}">자동</button>
+      <button data-th="light" class="${S.settings.theme === 'light' ? 'on i' : ''}">라이트</button>
+      <button data-th="dark" class="${S.settings.theme === 'dark' ? 'on i' : ''}">다크</button></div>
+      <p class="muted" style="margin:8px 0 0">자동은 휴대폰의 다크/라이트 설정을 따라가요.</p></div>
+    <div class="box"><h3>기본 정보</h3>
       <label>월급 (음성으로 "월급 들어왔어" 라고 하면 자동 입력돼요)</label><input id="sSalary" type="number" value="${S.settings.salary || ''}">
       <label>월 예산</label><input id="sBudget" type="number" value="${S.settings.budget || ''}">
       <div class="btns"><button class="btn" id="sSave">저장</button></div></div>
@@ -199,6 +209,7 @@
       <div class="btns"><button class="btn red" id="reset">전체 삭제</button></div>
       <input type="file" id="file" accept=".json" style="display:none"></div>
     <div class="box"><h3>🎤 음성 입력 예시</h3><p class="muted">"쿠팡에서 오늘 삼성이로 삼만원짜리 충전기 샀어"<br>"어제 롯데로 점심 만이천원"<br>"월급 들어왔어" (설정한 월급 자동 입력)<br>"용돈 오만원 받았어"<br>카드 별명은 [카드혜택] 탭에서 등록하세요.</p></div>`;
+    $('#themeSeg').onclick = e => { const b = e.target.closest('[data-th]'); if (!b) return; S.settings.theme = b.dataset.th; applyTheme(); save(); renderSettings(); };
     $('#sSave').onclick = () => { S.settings.salary = +$('#sSalary').value || 0; S.settings.budget = +$('#sBudget').value || 0; save(); toast('저장됐어요'); render(); };
     $('#exJson').onclick = () => download('가계부백업.json', JSON.stringify(S, null, 2), 'application/json');
     $('#exCsv').onclick = () => download('가계부.csv', '\ufeff날짜,구분,카테고리,금액,결제수단,메모\n' + S.txs.map(t => [t.date, t.type === 'income' ? '수입' : '지출', t.category, t.amount, cardOf(t.cardId)?.name || (t.payment === 'cash' ? '현금' : ''), '"' + (t.memo || '').replace(/"/g, '""') + '"'].join(',')).join('\n'), 'text/csv');
@@ -253,7 +264,7 @@
     const DB = window.CARD_DB;
     c = c || { id: uid(), company: '', name: '', nickname: '', emoji: DB.emojis[Math.floor(Math.random() * DB.emojis.length)], color: DB.colors[Math.floor(Math.random() * DB.colors.length)], kind: 'credit', defaultRate: 0.5, rules: {}, minSpend: 0, cap: 0 };
     openModal(`<h3 style="margin-top:0">${isNew ? '🐣 새 카드 등록' : '✏️ 카드 수정'}</h3>
-      <div class="box" style="background:var(--soft);box-shadow:none">
+      <div class="box" style="background:var(--surface2);box-shadow:none">
         <b>✨ 카드사/카드 고르면 혜택이 자동으로 채워져요</b>
         <label>카드사</label><select id="cCompany"><option value="">선택</option>${DB.companies.map(x => `<option ${x === c.company ? 'selected' : ''}>${x}</option>`).join('')}</select>
         <label>카드 종류</label><select id="cPreset"><option value="">직접 입력</option></select>
