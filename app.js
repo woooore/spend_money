@@ -70,7 +70,7 @@
 
   function txRow(t) {
     const c = cardOf(t.cardId);
-    const pay = c ? c.nickname || c.name : (t.payment === 'cash' ? '현금' : '');
+    const pay = c ? (c.emoji || '💳') + (c.nickname || c.name) : (t.payment === 'cash' ? '💵현금' : '');
     return `<div class="tx" data-id="${t.id}"><div class="ic">${ICON[t.category] || '💸'}</div>
       <div class="mid"><div>${esc(t.memo || t.category)}</div><small>${t.category}${pay ? ' · ' + esc(pay) : ''}${t.date ? ' · ' + t.date.slice(5) : ''}</small></div>
       <div class="amt ${t.type === 'income' ? 'inc' : 'exp'}">${t.type === 'income' ? '+' : '-'}${won(t.amount)}</div></div>`;
@@ -140,8 +140,8 @@
     if (!S.cards.length) h += '<div class="empty">카드를 등록하면 포인트/절약 분석을 볼 수 있어요</div>';
     S.cards.forEach(c => {
       const s = st[c.id];
-      h += `<div class="tx" data-card="${c.id}"><div class="ic">${c.kind === 'check' ? '🏧' : '💳'}</div><div class="mid">
-        <div><b>${esc(c.name)}</b><span class="badge">별명 ${esc(c.nickname || '-')}</span><span class="badge">${c.kind === 'check' ? '체크' : '신용'}</span></div>
+      h += `<div class="tx" data-card="${c.id}"><div class="avatar" style="background:${c.color || '#ffd6e0'}">${c.emoji || (c.kind === 'check' ? '🏧' : '💳')}</div><div class="mid">
+        <div><b>${esc(c.nickname || c.name)}</b><span class="badge">${esc(c.company || '')} ${esc(c.name)}</span><span class="badge">${c.kind === 'check' ? '체크' : '신용'}</span></div>
         <small>사용 ${won(s.spend)} · 예상 적립/할인 <b class="inc">${won(s.pts)}</b>${c.cap ? ' (한도 ' + won(c.cap) + ')' : ''}</small>
         ${c.minSpend ? `<br><small style="color:${s.eligible ? 'var(--inc)' : 'var(--exp)'}">전월실적 ${won(s.prev)} / ${won(c.minSpend)} ${s.eligible ? '✔ 충족' : '✖ 미충족 (혜택 못 받을 수 있어요)'}</small>` : ''}
       </div></div>`;
@@ -231,7 +231,7 @@
       document.querySelectorAll('.seg button').forEach(b => b.classList.toggle(b.classList[0], true));
       const cats = type === 'income' ? INC_CATS : EXP_CATS;
       $('#fCat').innerHTML = cats.map(c => `<option ${c === t.category ? 'selected' : ''}>${c}</option>`).join('');
-      $('#fPay').innerHTML = `<option value="none">선택 안 함</option><option value="cash" ${t.payment === 'cash' ? 'selected' : ''}>현금</option>` + S.cards.map(c => `<option value="${c.id}" ${t.cardId === c.id ? 'selected' : ''}>${esc(c.name)}${c.nickname ? ' (' + esc(c.nickname) + ')' : ''}</option>`).join('');
+      $('#fPay').innerHTML = `<option value="none">선택 안 함</option><option value="cash" ${t.payment === 'cash' ? 'selected' : ''}>현금</option>` + S.cards.map(c => `<option value="${c.id}" ${t.cardId === c.id ? 'selected' : ''}>${c.emoji || '💳'} ${esc(c.nickname || c.name)} (${esc(c.name)})</option>`).join('');
     };
     fill();
     document.querySelectorAll('.seg button').forEach(b => b.onclick = () => { type = b.dataset.t; t.category = type === 'income' ? '급여' : '식비'; fill(); });
@@ -250,21 +250,53 @@
 
   function openCardForm(c) {
     const isNew = !c;
-    c = c || { id: uid(), name: '', nickname: '', kind: 'credit', defaultRate: 0.5, rules: {}, minSpend: 0, cap: 0 };
-    openModal(`<h3 style="margin-top:0">${isNew ? '카드 추가' : '카드 수정'}</h3>
-      <label>카드 이름</label><input id="cName" value="${esc(c.name)}" placeholder="삼성 iD ON 카드">
-      <label>별명 (음성 인식용)</label><input id="cNick" value="${esc(c.nickname)}" placeholder="삼성이">
+    const DB = window.CARD_DB;
+    c = c || { id: uid(), company: '', name: '', nickname: '', emoji: DB.emojis[Math.floor(Math.random() * DB.emojis.length)], color: DB.colors[Math.floor(Math.random() * DB.colors.length)], kind: 'credit', defaultRate: 0.5, rules: {}, minSpend: 0, cap: 0 };
+    openModal(`<h3 style="margin-top:0">${isNew ? '🐣 새 카드 등록' : '✏️ 카드 수정'}</h3>
+      <div class="box" style="background:var(--soft);box-shadow:none">
+        <b>✨ 카드사/카드 고르면 혜택이 자동으로 채워져요</b>
+        <label>카드사</label><select id="cCompany"><option value="">선택</option>${DB.companies.map(x => `<option ${x === c.company ? 'selected' : ''}>${x}</option>`).join('')}</select>
+        <label>카드 종류</label><select id="cPreset"><option value="">직접 입력</option></select>
+        <div id="cNote" class="note" style="display:none"></div>
+        <div style="margin-top:6px"><a id="cSearch" href="#" target="_blank" class="muted">🔍 목록에 없다면 웹에서 혜택 검색하기</a></div>
+      </div>
+      <label>카드 이름</label><input id="cName" value="${esc(c.name)}" placeholder="예: iD ON 카드">
+      <label>별명 🎤 (음성으로 부를 이름)</label><input id="cNick" value="${esc(c.nickname)}" placeholder="예: 콩이, 삼성이">
+      <div class="chips" id="cNickChips">${DB.nicknames.map(n => `<button type="button" class="chip">${n}</button>`).join('')}</div>
+      <label>캐릭터</label><div class="chips" id="cEmoji">${DB.emojis.map(e => `<button type="button" class="chip em ${e === c.emoji ? 'on' : ''}" data-e="${e}">${e}</button>`).join('')}</div>
+      <label>카드 색상</label><div class="chips" id="cColor">${DB.colors.map(x => `<button type="button" class="sw ${x === c.color ? 'on' : ''}" data-c="${x}" style="background:${x}"></button>`).join('')}</div>
       <label>종류</label><select id="cKind"><option value="credit" ${c.kind === 'credit' ? 'selected' : ''}>신용카드</option><option value="check" ${c.kind === 'check' ? 'selected' : ''}>체크카드</option></select>
       <label>혜택 (적립/할인율 %, 카테고리별)</label><textarea id="cRules" rows="3" placeholder="기본:0.5, 식비:5, 교통:10, 쇼핑:3">${esc(rulesToStr(c))}</textarea>
       <label>전월실적 조건 (원, 없으면 0)</label><input id="cMin" type="number" value="${c.minSpend || 0}">
       <label>월 적립/할인 한도 (원, 없으면 0)</label><input id="cCap" type="number" value="${c.cap || 0}">
       <div class="btns">${isNew ? '' : '<button class="btn red" id="cDel">삭제</button>'}<button class="btn gray" id="cCancel">취소</button><button class="btn" id="cSave">저장</button></div>`);
     $('#cCancel').onclick = closeModal;
+    const kindSel = () => $('#cKind').value;
+    const refreshPresets = () => {
+      const co = $('#cCompany').value;
+      $('#cPreset').innerHTML = '<option value="">직접 입력</option>' + DB.cards.map((p, i) => [p, i]).filter(([p]) => !co || p.company === co).map(([p, i]) => `<option value="${i}">${p.kind === 'check' ? '🏧' : '💳'} ${p.name}</option>`).join('');
+      const q = encodeURIComponent((co || '') + ' ' + ($('#cName').value || '') + ' 혜택 전월실적');
+      $('#cSearch').href = 'https://www.google.com/search?q=' + q;
+    };
+    refreshPresets();
+    $('#cCompany').onchange = refreshPresets;
+    $('#cName').oninput = refreshPresets;
+    $('#cPreset').onchange = () => {
+      const p = DB.cards[$('#cPreset').value]; if (!p) { $('#cNote').style.display = 'none'; return; }
+      $('#cName').value = p.name; $('#cKind').value = p.kind; $('#cCompany').value = p.company;
+      $('#cRules').value = rulesToStr(p); $('#cMin').value = p.minSpend; $('#cCap').value = p.cap;
+      $('#cNote').style.display = 'block'; $('#cNote').textContent = '📌 ' + p.note + ' (참고용 · ' + DB.checked + ' 기준, 정확한 조건은 카드사에서 확인!)';
+      if (!$('#cNick').value) $('#cNick').value = p.company.replace(/카드|뱅크/g, '') + '이';
+      toast('혜택을 불러왔어요 ✨');
+    };
+    $('#cNickChips').onclick = e => { if (e.target.classList.contains('chip')) $('#cNick').value = e.target.textContent; };
+    $('#cEmoji').onclick = e => { const b = e.target.closest('[data-e]'); if (!b) return; c.emoji = b.dataset.e; document.querySelectorAll('#cEmoji .chip').forEach(x => x.classList.toggle('on', x === b)); };
+    $('#cColor').onclick = e => { const b = e.target.closest('[data-c]'); if (!b) return; c.color = b.dataset.c; document.querySelectorAll('#cColor .sw').forEach(x => x.classList.toggle('on', x === b)); };
     if (!isNew) $('#cDel').onclick = () => { if (confirm('카드를 삭제할까요? (기존 내역은 유지)')) { S.cards = S.cards.filter(x => x.id !== c.id); S.txs.forEach(t => { if (t.cardId === c.id) { t.cardId = null; t.payment = 'none'; } }); save(); closeModal(); render(); } };
     $('#cSave').onclick = () => {
       if (!$('#cName').value.trim()) return toast('카드 이름을 입력해 주세요');
       const { rules, def } = parseRules($('#cRules').value);
-      Object.assign(c, { name: $('#cName').value.trim(), nickname: $('#cNick').value.trim(), kind: $('#cKind').value, rules, defaultRate: def, minSpend: +$('#cMin').value || 0, cap: +$('#cCap').value || 0 });
+      Object.assign(c, { company: $('#cCompany').value, name: $('#cName').value.trim(), nickname: $('#cNick').value.trim(), kind: $('#cKind').value, rules, defaultRate: def, minSpend: +$('#cMin').value || 0, cap: +$('#cCap').value || 0 });
       if (isNew) S.cards.push(c);
       save(); closeModal(); render();
     };
