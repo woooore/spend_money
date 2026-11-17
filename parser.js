@@ -109,14 +109,22 @@
     if (m) { amount = koreanToNumber(m[1]); work = work.replace(m[0], ' '); }
     else if ((m = work.match(AMOUNT_RE2))) { amount = koreanToNumber(m[1]); work = work.replace(m[0], ' '); }
 
-    const isIncome = INCOME_WORDS.some(w => text.includes(w)) && !/(샀|썼|결제|사용)/.test(text);
+    // 사용자 지정 키워드가 있으면 최우선 (카테고리 종류도 따라감)
+    let userCat = null;
+    for (const [cat, words] of Object.entries(ctx.keywords || {})) {
+      if ((words || []).some(w => w && text.includes(w))) { userCat = cat; break; }
+    }
+    const isIncome = userCat
+      ? (ctx.incomeCats || []).includes(userCat)
+      : INCOME_WORDS.some(w => text.includes(w)) && !/(샀|삿|썼|결제|사용)/.test(text);
     if (isIncome && !amount && /월급|급여|봉급/.test(text) && ctx.salary) amount = ctx.salary;
 
     const date = detectDate(text, now);
     const type = isIncome ? 'income' : 'expense';
-    const category = type === 'income'
+    if (isIncome && usedDefault) card = null;
+    const category = userCat || (type === 'income'
       ? matchCategory(text, INCOME_CATEGORIES, '기타수입')
-      : matchCategory(text, CATEGORIES, '기타지출');
+      : matchCategory(text, CATEGORIES, '기타지출'));
 
     // 메모: 군더더기 제거
     let memo = work

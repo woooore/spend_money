@@ -1,9 +1,21 @@
 (() => {
   const $ = (s, r = document) => r.querySelector(s);
   const KEY = 'howSpendMoney.v1';
-  const EXP_CATS = Object.keys(Parser.CATEGORIES);
-  const INC_CATS = Object.keys(Parser.INCOME_CATEGORIES);
+  const BUILTIN_EXP = Object.keys(Parser.CATEGORIES);
+  const BUILTIN_INC = Object.keys(Parser.INCOME_CATEGORIES);
+  const EXP_CATS = [...BUILTIN_EXP], INC_CATS = [...BUILTIN_INC];
   const ICON = { 식비: '🍚', 교통: '🚌', 쇼핑: '🛍️', 생활: '🧻', 주거통신: '🏠', 의료건강: '💊', 문화여가: '🎬', 교육: '📚', 경조사: '🎁', 미용: '💇', 기타지출: '💸', 급여: '💰', 용돈: '🧧', 부수입: '💵', 기타수입: '➕' };
+  const BASE_ICON = { ...ICON };
+  // 사용자 카테고리/키워드를 목록·아이콘에 반영 (기타지출/기타수입은 맨 뒤 유지)
+  function refreshCats() {
+    const cc = S.customCats || [];
+    const build = (builtin, type, last) => [...builtin.filter(c => c !== last), ...cc.filter(c => c.type === type).map(c => c.name), last];
+    EXP_CATS.splice(0, EXP_CATS.length, ...build(BUILTIN_EXP, 'expense', '기타지출'));
+    INC_CATS.splice(0, INC_CATS.length, ...build(BUILTIN_INC, 'income', '기타수입'));
+    Object.keys(ICON).forEach(k => delete ICON[k]); Object.assign(ICON, BASE_ICON);
+    cc.forEach(c => ICON[c.name] = c.emoji || '🏷️');
+  }
+  const incomeCatNames = () => [...BUILTIN_INC, ...(S.customCats || []).filter(c => c.type === 'income').map(c => c.name)];
   const won = n => Math.round(n).toLocaleString('ko-KR') + '원';
   const uid = () => Math.random().toString(36).slice(2, 10);
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -23,6 +35,7 @@
     if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
   }
   applyTheme();
+  S.customCats ||= []; S.keywords ||= {};
   const save = () => localStorage.setItem(KEY, JSON.stringify(S));
   const mKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
   const curKey = () => mKey(cur);
@@ -63,6 +76,7 @@
 
   // ---------- 렌더 ----------
   function render() {
+    S.customCats ||= []; S.keywords ||= {}; refreshCats();
     $('#monthTitle').textContent = cur.getFullYear() + '년 ' + (cur.getMonth() + 1) + '월';
     const txs = monthTxs(curKey());
     const inc = txs.filter(t => t.type === 'income').reduce((a, t) => a + t.amount, 0);
@@ -221,6 +235,51 @@
     el.querySelectorAll('[data-card]').forEach(e => e.onclick = () => openCardForm(cardOf(e.dataset.card)));
   }
 
+  function catChip(c) {
+    const n = (S.keywords[c] || []).length;
+    return `<button class="chip" data-cat="${esc(c)}">${ICON[c] || '🏷️'} ${esc(c)}${n ? ` <span class="badge" style="margin:0 0 0 4px">${n}</span>` : ''}</button>`;
+  }
+  // 카테고리 추가/수정 + 자동 분류 단어 등록
+  function openCatForm(name) {
+    const custom = (S.customCats || []).find(c => c.name === name);
+    const isNew = !name;
+    const builtin = !isNew && !custom;
+    const kw = (S.keywords[name] || []).join(', ');
+    const type = custom ? custom.type : (BUILTIN_INC.includes(name) ? 'income' : 'expense');
+    openModal(`<h3 style="margin-top:0">${isNew ? '🏷️ 새 카테고리' : esc(name) + ' 설정'}</h3>
+      ${builtin ? '' : `<label>이름</label><input id="kName" value="${esc(name || '')}" placeholder="예: 헌금">
+        <label>이모지</label><input id="kEmoji" value="${esc(custom ? custom.emoji : '⛪')}" maxlength="4" style="width:90px;font-size:22px">
+        <label>종류</label><div class="seg" id="kType"><button data-t="expense" class="e ${type === 'expense' ? 'on' : ''}">지출</button><button data-t="income" class="i ${type === 'income' ? 'on' : ''}">수입</button></div>`}
+      <label>이 단어가 들어가면 자동으로 ${builtin ? esc(name) : '이 카테고리'}로 분류 (쉼표로 구분)</label>
+      <textarea id="kWords" rows="3" placeholder="예: 교회, 헌금, 십일조, 감사헌금">${esc(kw)}</textarea>
+      <p class="muted">내가 등록한 단어는 기본 분류보다 우선해요. 음성/문장 입력 모두 적용돼요.</p>
+      <div class="btns">${custom ? '<button class="btn red" id="kDel">삭제</button>' : ''}<button class="btn gray" id="kCancel">취소</button><button class="btn" id="kSave">저장</button></div>`);
+    let t = type;
+    if (!builtin) $('#kType').onclick = e => { const b = e.target.closest('[data-t]'); if (!b) return; t = b.dataset.t; document.querySelectorAll('#kType button').forEach(x => x.classList.toggle('on', x === b)); };
+    $('#kCancel').onclick = closeModal;
+    if (custom) $('#kDel').onclick = () => {
+      if (!confirm('카테고리를 삭제할까요? 기존 내역은 기타로 옮겨져요.')) return;
+      S.txs.forEach(x => { if (x.category === name) x.category = x.type === 'income' ? '기타수입' : '기타지출'; });
+      S.customCats = S.customCats.filter(c => c.name !== name); delete S.keywords[name]; save(); closeModal(); render();
+    };
+    $('#kSave').onclick = () => {
+      const words = $('#kWords').value.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+      let finalName = name;
+      if (!builtin) {
+        finalName = $('#kName').value.trim();
+        if (!finalName) return toast('이름을 입력해 주세요');
+        if (finalName !== name && [...BUILTIN_EXP, ...BUILTIN_INC, ...S.customCats.map(c => c.name)].includes(finalName)) return toast('이미 있는 이름이에요');
+        const emoji = $('#kEmoji').value.trim() || '🏷️';
+        if (custom) {
+          if (finalName !== name) { S.txs.forEach(x => { if (x.category === name) x.category = finalName; }); delete S.keywords[name]; }
+          Object.assign(custom, { name: finalName, emoji, type: t });
+        } else S.customCats.push({ name: finalName, emoji, type: t });
+      }
+      if (words.length) S.keywords[finalName] = words; else delete S.keywords[finalName];
+      save(); closeModal(); render(); toast('저장했어요');
+    };
+  }
+
   function renderSettings() {
     const el = $('#tab-settings');
     el.innerHTML = `<div class="box"><h3>화면 모드</h3><div class="seg" id="themeSeg">
@@ -232,11 +291,17 @@
       <label>월급 (음성으로 "월급 들어왔어" 라고 하면 자동 입력돼요)</label><input id="sSalary" type="number" value="${S.settings.salary || ''}">
       <label>월 예산</label><input id="sBudget" type="number" value="${S.settings.budget || ''}">
       <div class="btns"><button class="btn" id="sSave">저장</button></div></div>
+    <div class="box"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3 style="margin:0">카테고리 · 자동 분류 단어</h3><button class="chip" id="addCat">+ 새 카테고리</button></div>
+      <p class="muted" style="margin:0 0 8px">카테고리를 눌러 단어를 등록하세요. 예: 교회·헌금·십일조 → ⛪ 헌금</p>
+      <div class="muted" style="margin:8px 0 4px">지출</div><div class="chips">${EXP_CATS.map(catChip).join('')}</div>
+      <div class="muted" style="margin:12px 0 4px">수입</div><div class="chips">${INC_CATS.map(catChip).join('')}</div></div>
     <div class="box"><h3>데이터</h3><div class="btns">
       <button class="btn gray" id="exJson">백업(JSON)</button><button class="btn gray" id="exCsv">CSV 내보내기</button><button class="btn gray" id="imJson">불러오기</button></div>
       <div class="btns"><button class="btn red" id="reset">전체 삭제</button></div>
       <input type="file" id="file" accept=".json" style="display:none"></div>
     <div class="box"><h3>🎤 음성 입력 예시</h3><p class="muted">"쿠팡에서 오늘 삼성이로 삼만원짜리 충전기 샀어"<br>"어제 롯데로 점심 만이천원"<br>"월급 들어왔어" (설정한 월급 자동 입력)<br>"용돈 오만원 받았어"<br>카드 별명은 [카드혜택] 탭에서 등록하세요.</p></div>`;
+    $('#addCat').onclick = () => openCatForm();
+    el.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => openCatForm(b.dataset.cat));
     $('#themeSeg').onclick = e => { const b = e.target.closest('[data-th]'); if (!b) return; S.settings.theme = b.dataset.th; applyTheme(); save(); renderSettings(); };
     $('#sSave').onclick = () => { S.settings.salary = +$('#sSalary').value || 0; S.settings.budget = +$('#sBudget').value || 0; save(); toast('저장됐어요'); render(); };
     $('#exJson').onclick = () => download('가계부백업.json', JSON.stringify(S, null, 2), 'application/json');
@@ -276,7 +341,7 @@
     document.querySelectorAll('.seg button').forEach(b => b.onclick = () => { type = b.dataset.t; t.category = type === 'income' ? '급여' : '식비'; fill(); });
     $('#fCancel').onclick = closeModal;
     if (!isNew) $('#fDel').onclick = () => { S.txs = S.txs.filter(x => x.id !== t.id); save(); closeModal(); render(); };
-    if (isNew) $('#fParse').onclick = () => { const r = Parser.parseTransaction($('#fSent').value, { cards: S.cards, salary: S.settings.salary }); closeModal(); openForm(null, r); };
+    if (isNew) $('#fParse').onclick = () => { const r = Parser.parseTransaction($('#fSent').value, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() }); closeModal(); openForm(null, r); };
     $('#fSave').onclick = () => {
       const amt = +$('#fAmt').value; if (!(amt > 0)) return toast('금액을 입력해 주세요');
       const pay = $('#fPay').value;
@@ -392,7 +457,7 @@
 
   // 음성 결과를 확인창 없이 바로 등록 (금액을 못 알아들었을 때만 입력창)
   function handleVoice(text) {
-    const p = Parser.parseTransaction(text, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id });
+    const p = Parser.parseTransaction(text, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() });
     if (!p.ok) { toast('금액을 못 알아들었어요: ' + text); return openForm(null, p); }
     const tx = { id: uid(), type: p.type, amount: p.amount, date: p.date, category: p.category, memo: p.memo, cardId: p.cardId, payment: p.payment };
     S.txs.push(tx); save();
