@@ -97,6 +97,11 @@
       if (hit.length === 1) { card = hit[0]; work = work.replace(card.company.replace(/카드|뱅크/g, ''), ' '); }
     }
     const cash = !card && /현금/.test(work);
+    // 카드를 말하지 않았으면 기본 카드(지출일 때만)
+    let usedDefault = false;
+    if (!card && !cash && ctx.defaultCardId && !INCOME_WORDS.some(w => text.includes(w))) {
+      card = cards.find(c => c.id === ctx.defaultCardId) || null; usedDefault = !!card;
+    }
 
     // 금액
     let amount = 0;

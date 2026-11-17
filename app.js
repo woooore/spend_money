@@ -130,12 +130,40 @@
     if (bud) { const p = Math.min(100, total / bud * 100);
       h += `<div class="box"><h3>이번 달 예산</h3><div class="bar ${total > bud ? 'over' : ''}"><i style="width:${p}%"></i></div>
       <p class="muted">${won(total)} / ${won(bud)} (${Math.round(total / bud * 100)}%) · ${total > bud ? '<b class="exp">' + won(total - bud) + ' 초과</b>' : '남은 예산 ' + won(bud - total)}</p></div>`; }
-    h += `<div class="box"><h3>카테고리별 지출</h3>${arr.length ? arr.map(([k, v]) => `<div class="row"><span class="l">${ICON[k] || ''} ${k}</span><div class="bar"><i style="width:${v / arr[0][1] * 100}%"></i></div><span class="r">${won(v)}<br><small class="muted">${Math.round(v / total * 100)}%</small></span></div>`).join('') : '<div class="empty">지출이 없어요</div>'}</div>`;
+    const ct = S.settings.chartType === 'bar' ? 'bar' : 'donut';
+    h += `<div class="box"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3 style="margin:0">카테고리별 지출</h3>
+      <div class="seg mini" id="chartSeg"><button data-ct="donut" class="${ct === 'donut' ? 'on i' : ''}">원형</button><button data-ct="bar" class="${ct === 'bar' ? 'on i' : ''}">막대</button></div></div>`;
+    if (!arr.length) h += '<div class="empty">지출이 없어요</div>';
+    else if (ct === 'bar') h += arr.map(([k, v]) => `<div class="row"><span class="l">${ICON[k] || ''} ${k}</span><div class="bar"><i style="width:${v / arr[0][1] * 100}%"></i></div><span class="r">${won(v)}<br><small class="muted">${Math.round(v / total * 100)}%</small></span></div>`).join('');
+    else h += donut(arr, total);
+    h += '</div>';
     // 최근 6개월 추이
     const months = []; for (let i = 5; i >= 0; i--) { const d = new Date(cur); d.setMonth(d.getMonth() - i); months.push(mKey(d)); }
     const vals = months.map(k => monthTxs(k).filter(t => t.type === 'expense').reduce((a, t) => a + t.amount, 0)); const mx = Math.max(...vals, 1);
     h += `<div class="box"><h3>최근 6개월 지출</h3>${months.map((k, i) => `<div class="row"><span class="l">${k.slice(2)}</span><div class="bar"><i style="width:${vals[i] / mx * 100}%"></i></div><span class="r">${won(vals[i])}</span></div>`).join('')}</div>`;
     el.innerHTML = h;
+    $('#chartSeg').onclick = e => { const b = e.target.closest('[data-ct]'); if (!b) return; S.settings.chartType = b.dataset.ct; save(); renderStats(); };
+    el.querySelectorAll('.lg').forEach(x => x.onmouseenter = x.onclick = () => {
+      const k = x.dataset.k; const v = by[k];
+      el.querySelector('#dcLabel').textContent = k; el.querySelector('#dcVal').textContent = won(v);
+      el.querySelectorAll('.seg-arc').forEach(a => a.classList.toggle('dim', a.dataset.k !== k));
+    });
+  }
+
+  const PALETTE = ['#f0627f', '#ffa45c', '#ffd15c', '#6fcf97', '#56ccf2', '#9b8cff', '#ff8fd0', '#4fd1c5', '#c0a080', '#a0aec0', '#e07a5f'];
+  // 반투명 도넛 차트 (SVG)
+  function donut(arr, total) {
+    const R = 70, C = 2 * Math.PI * R; let off = 0;
+    const arcs = arr.map(([k, v], i) => {
+      const len = v / total * C, col = PALETTE[i % PALETTE.length];
+      const s = `<circle class="seg-arc" data-k="${k}" r="${R}" cx="90" cy="90" fill="none" stroke="${col}" stroke-width="26" stroke-opacity=".78"
+        stroke-dasharray="${Math.max(len - 2, 0)} ${C - Math.max(len - 2, 0)}" stroke-dashoffset="${-off}" transform="rotate(-90 90 90)"/>`;
+      off += len; return s;
+    }).join('');
+    const legend = arr.map(([k, v], i) => `<div class="lg" data-k="${k}"><i style="background:${PALETTE[i % PALETTE.length]}"></i><span>${ICON[k] || ''} ${k}</span><b>${Math.round(v / total * 100)}%</b><small>${won(v)}</small></div>`).join('');
+    return `<div class="donut"><svg viewBox="0 0 180 180"><circle r="${R}" cx="90" cy="90" fill="none" stroke="var(--surface2)" stroke-width="26"/>${arcs}
+      <text x="90" y="84" text-anchor="middle" class="dc-l" id="dcLabel">총 지출</text><text x="90" y="104" text-anchor="middle" class="dc-v" id="dcVal">${won(total)}</text></svg>
+      <div class="legend">${legend}</div></div>`;
   }
 
   function renderCards() {
@@ -146,7 +174,7 @@
     S.cards.forEach(c => {
       const s = st[c.id];
       h += `<div class="tx" data-card="${c.id}"><div class="avatar" style="background:${c.color || '#ffd6e0'}">${c.emoji || (c.kind === 'check' ? '🏧' : '💳')}</div><div class="mid">
-        <div><b>${esc(c.nickname || c.name)}</b><span class="badge">${esc(c.company || '')} ${esc(c.name)}</span><span class="badge">${c.kind === 'check' ? '체크' : '신용'}</span></div>
+        <div><b>${esc(c.nickname || c.name)}</b>${c.isDefault ? '<span class="badge">⭐ 기본</span>' : ''}<span class="badge">${esc(c.company || '')} ${esc(c.name)}</span><span class="badge">${c.kind === 'check' ? '체크' : '신용'}</span></div>
         <small>사용 ${won(s.spend)} · 예상 적립/할인 <b class="inc">${won(s.pts)}</b>${c.cap ? ' (한도 ' + won(c.cap) + ')' : ''}</small>
         ${c.minSpend ? `<br><small style="color:${s.eligible ? 'var(--inc)' : 'var(--exp)'}">전월실적 ${won(s.prev)} / ${won(c.minSpend)} ${s.eligible ? '✔ 충족' : '✖ 미충족 (혜택 못 받을 수 있어요)'}</small>` : ''}
       </div></div>`;
@@ -226,7 +254,7 @@
 
   function openForm(t, preset) {
     const isNew = !t;
-    t = t || Object.assign({ id: uid(), type: 'expense', amount: '', date: selDay, category: '식비', memo: '', cardId: null, payment: 'none' }, preset || {});
+    t = t || Object.assign({ id: uid(), type: 'expense', amount: '', date: selDay, category: '식비', memo: '', cardId: (S.cards.find(c => c.isDefault) || {}).id || null, payment: S.cards.some(c => c.isDefault) ? 'card' : 'none' }, preset || {});
     openModal(`<h3 style="margin-top:0">${isNew ? '내역 추가' : '내역 수정'}</h3>
       ${isNew ? `<label>🎤 문장으로 입력 (예: 어제 삼성이로 점심 만원)</label><div style="display:flex;gap:6px"><input id="fSent" placeholder="말하듯이 적어보세요"><button class="btn" id="fParse" style="white-space:nowrap">분석</button></div>` : ''}
       <div class="seg" style="margin-top:10px"><button class="e" data-t="expense">지출</button><button class="i" data-t="income">수입</button></div>
@@ -280,6 +308,7 @@
       <label>혜택 (적립/할인율 %, 카테고리별)</label><textarea id="cRules" rows="3" placeholder="기본:0.5, 식비:5, 교통:10, 쇼핑:3">${esc(rulesToStr(c))}</textarea>
       <label>전월실적 조건 (원, 없으면 0)</label><input id="cMin" type="number" value="${c.minSpend || 0}">
       <label>월 적립/할인 한도 (원, 없으면 0)</label><input id="cCap" type="number" value="${c.cap || 0}">
+      <label style="display:flex;align-items:center;gap:8px;margin-top:16px;color:var(--txt);font-size:14px"><input type="checkbox" id="cDef" style="width:auto" ${c.isDefault ? 'checked' : ''}> ⭐ 기본 카드로 설정 (카드를 말하지 않으면 이 카드로 결제한 걸로 기록)</label>
       <div class="btns">${isNew ? '' : '<button class="btn red" id="cDel">삭제</button>'}<button class="btn gray" id="cCancel">취소</button><button class="btn" id="cSave">저장</button></div>`);
     $('#cCancel').onclick = closeModal;
     const kindSel = () => $('#cKind').value;
@@ -309,6 +338,9 @@
       const { rules, def } = parseRules($('#cRules').value);
       Object.assign(c, { company: $('#cCompany').value, name: $('#cName').value.trim(), nickname: $('#cNick').value.trim(), kind: $('#cKind').value, rules, defaultRate: def, minSpend: +$('#cMin').value || 0, cap: +$('#cCap').value || 0 });
       if (isNew) S.cards.push(c);
+      c.isDefault = $('#cDef').checked;
+      if (c.isDefault) S.cards.forEach(x => { if (x.id !== c.id) x.isDefault = false; });
+      else if (S.cards.length === 1) c.isDefault = true;
       save(); closeModal(); render();
     };
   }
@@ -360,7 +392,7 @@
 
   // 음성 결과를 확인창 없이 바로 등록 (금액을 못 알아들었을 때만 입력창)
   function handleVoice(text) {
-    const p = Parser.parseTransaction(text, { cards: S.cards, salary: S.settings.salary, now: nowKST() });
+    const p = Parser.parseTransaction(text, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id });
     if (!p.ok) { toast('금액을 못 알아들었어요: ' + text); return openForm(null, p); }
     const tx = { id: uid(), type: p.type, amount: p.amount, date: p.date, category: p.category, memo: p.memo, cardId: p.cardId, payment: p.payment };
     S.txs.push(tx); save();

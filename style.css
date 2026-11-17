@@ -134,3 +134,17 @@ input:focus,select:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(
 .sw.on{box-shadow:0 0 0 2.5px var(--txt)}
 .avatar{width:46px;height:46px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:26px;flex:none}
 .note{font-size:12px;color:var(--sub);background:var(--surface2);border-radius:var(--r-s);padding:var(--s2) var(--s3);margin-top:var(--s2)}
+
+/* ── 도넛 차트 / 차트 전환 ─────────────────── */
+.seg.mini{padding:3px;gap:2px}.seg.mini button{padding:5px 12px;font-size:12px}
+.donut{display:flex;flex-direction:column;align-items:center;gap:var(--s3)}
+.donut svg{width:220px;height:220px;overflow:visible;filter:drop-shadow(0 6px 14px color-mix(in srgb,var(--accent) 18%,transparent))}
+.seg-arc{transition:stroke-opacity .2s,stroke-width .2s;cursor:pointer}
+.seg-arc.dim{stroke-opacity:.25}
+.dc-l{font-size:11px;fill:var(--sub)}.dc-v{font-size:15px;font-weight:700;fill:var(--txt)}
+.legend{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:var(--s1) var(--s4)}
+.lg{display:flex;align-items:center;gap:6px;font-size:13px;padding:5px 2px;cursor:pointer;min-width:0}
+.lg i{width:10px;height:10px;border-radius:50%;flex:none;opacity:.8}
+.lg span{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lg small{display:none}
+@media(min-width:520px){.donut{flex-direction:row}.legend{grid-template-columns:1fr}.lg small{display:inline;color:var(--sub);font-size:12px}}
