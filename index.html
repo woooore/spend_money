@@ -29,9 +29,11 @@
   <div id="tab-settings" class="tab"></div>
 </main>
 
-<button id="micBtn" aria-label="음성으로 입력"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
-<button id="photoBtn" aria-label="영수증 사진 올리기"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 0 1 2-2h2l1.5-2h5L16 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
-<button id="addBtn" aria-label="직접 입력"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+<div id="fabBar">
+  <button id="micBtn" aria-label="음성으로 입력"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span>음성</span></button>
+  <button id="photoBtn" aria-label="영수증 사진 올리기"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 0 1 2-2h2l1.5-2h5L16 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><circle cx="12" cy="13" r="3.5"/></svg><span>영수증</span></button>
+  <button id="addBtn" aria-label="직접 입력"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>직접입력</span></button>
+</div>
 <input type="file" id="receiptFile" accept="image/*" style="display:none">
 
 <nav>

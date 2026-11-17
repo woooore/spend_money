@@ -32,7 +32,7 @@
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0 auto;max-width:720px;background:var(--bg);color:var(--txt);
   font-family:'Pretendard Variable','Pretendard','Malgun Gothic',system-ui,sans-serif;
-  font-size:15px;line-height:1.45;padding-bottom:108px;font-variant-numeric:tabular-nums}
+  font-size:15px;line-height:1.45;padding-bottom:136px;font-variant-numeric:tabular-nums}
 b{font-weight:650}
 
 /* ── 헤더 / 요약 ───────────────────────────── */
@@ -94,15 +94,12 @@ nav button{flex:1;border:0;background:none;padding:7px 0 6px;cursor:pointer;colo
   display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;font-weight:500}
 nav button svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 nav button.on{color:var(--accent);background:var(--accent-soft)}
-#micBtn,#photoBtn,#addBtn{position:fixed;right:max(16px,calc(50% - 344px));border:0;border-radius:50%;cursor:pointer;z-index:7;box-shadow:var(--shadow),0 6px 16px rgba(0,0,0,.18);display:flex;align-items:center;justify-content:center}
-#micBtn svg,#photoBtn svg,#addBtn svg{stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-#micBtn{bottom:212px;width:60px;height:60px;background:var(--accent);color:var(--accent-ink)}
-#micBtn svg{width:26px;height:26px}
+#fabBar{position:fixed;bottom:74px;left:10px;right:10px;max-width:700px;margin:auto;display:flex;gap:8px;z-index:7}
+#micBtn,#photoBtn,#addBtn{flex:1;height:44px;border:1px solid var(--line);border-radius:16px;background:var(--surface);color:var(--txt);cursor:pointer;box-shadow:var(--shadow);display:flex;align-items:center;justify-content:center;gap:6px;font-family:inherit;font-size:13px;font-weight:600}
+#micBtn svg,#photoBtn svg,#addBtn svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+#micBtn{background:var(--accent);color:var(--accent-ink);border-color:transparent}
 #micBtn.rec{animation:pulse 1.1s infinite}
-#photoBtn{bottom:152px;width:48px;height:48px;background:var(--surface);color:var(--txt);border:1px solid var(--line)}
-#photoBtn svg{width:22px;height:22px}
-#addBtn{bottom:94px;width:48px;height:48px;background:var(--surface);color:var(--txt);border:1px solid var(--line)}
-#addBtn svg{width:22px;height:22px}
+#micBtn:active,#photoBtn:active,#addBtn:active{transform:scale(.97)}
 @keyframes pulse{50%{box-shadow:0 0 0 14px color-mix(in srgb,var(--accent) 25%,transparent)}}
 
 /* ── 모달 / 토스트 ─────────────────────────── */
@@ -110,7 +107,7 @@ nav button.on{color:var(--accent);background:var(--accent-soft)}
 #modal.hidden,#toast.hidden{display:none}
 #modalBox{background:var(--bg);width:100%;max-width:720px;border-radius:var(--r-l) var(--r-l) 0 0;padding:var(--s5) var(--s4) var(--s4);max-height:92vh;overflow:auto;animation:up .22s ease-out}
 @keyframes up{from{transform:translateY(32px);opacity:.4}}
-#toast{position:fixed;bottom:120px;left:50%;transform:translateX(-50%);background:var(--txt);color:var(--bg);padding:var(--s3) var(--s4);border-radius:var(--r-m);z-index:30;font-size:13px;max-width:92%;box-shadow:var(--shadow)}
+#toast{position:fixed;bottom:132px;left:50%;transform:translateX(-50%);background:var(--txt);color:var(--bg);padding:var(--s3) var(--s4);border-radius:var(--r-m);z-index:30;font-size:13px;max-width:92%;box-shadow:var(--shadow)}
 #toast .chip{margin-left:var(--s2);background:transparent;color:var(--bg);border-color:var(--faint)}
 
 /* ── 폼 ────────────────────────────────────── */
