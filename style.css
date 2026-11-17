@@ -94,11 +94,13 @@ nav button{flex:1;border:0;background:none;padding:7px 0 6px;cursor:pointer;colo
   display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;font-weight:500}
 nav button svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 nav button.on{color:var(--accent);background:var(--accent-soft)}
-#micBtn,#addBtn{position:fixed;right:max(16px,calc(50% - 344px));border:0;border-radius:50%;cursor:pointer;z-index:7;box-shadow:var(--shadow),0 6px 16px rgba(0,0,0,.18);display:flex;align-items:center;justify-content:center}
-#micBtn svg,#addBtn svg{stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-#micBtn{bottom:158px;width:60px;height:60px;background:var(--accent);color:var(--accent-ink)}
+#micBtn,#photoBtn,#addBtn{position:fixed;right:max(16px,calc(50% - 344px));border:0;border-radius:50%;cursor:pointer;z-index:7;box-shadow:var(--shadow),0 6px 16px rgba(0,0,0,.18);display:flex;align-items:center;justify-content:center}
+#micBtn svg,#photoBtn svg,#addBtn svg{stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+#micBtn{bottom:212px;width:60px;height:60px;background:var(--accent);color:var(--accent-ink)}
 #micBtn svg{width:26px;height:26px}
 #micBtn.rec{animation:pulse 1.1s infinite}
+#photoBtn{bottom:152px;width:48px;height:48px;background:var(--surface);color:var(--txt);border:1px solid var(--line)}
+#photoBtn svg{width:22px;height:22px}
 #addBtn{bottom:94px;width:48px;height:48px;background:var(--surface);color:var(--txt);border:1px solid var(--line)}
 #addBtn svg{width:22px;height:22px}
 @keyframes pulse{50%{box-shadow:0 0 0 14px color-mix(in srgb,var(--accent) 25%,transparent)}}

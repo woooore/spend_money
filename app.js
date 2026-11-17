@@ -317,16 +317,46 @@
   const openModal = html => { $('#modalBox').innerHTML = html; $('#modal').classList.remove('hidden'); };
   $('#modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
 
+  // 날짜에 n개월 더하기 (말일 보정)
+  function addMonths(ymdStr, n) {
+    const [y, m, d] = ymdStr.split('-').map(Number);
+    const dt = new Date(y, m - 1 + n, 1);
+    const last = new Date(dt.getFullYear(), dt.getMonth() + 1, 0).getDate();
+    dt.setDate(Math.min(d, last));
+    return Parser.ymd(dt);
+  }
+  // 거래일 + 카드 결제일 → 첫 청구일 계산
+  function firstPayDate(txDate, payDay) {
+    if (!payDay || payDay < 1 || payDay > 28) return txDate;
+    const [y, m, d] = txDate.split('-').map(Number);
+    const dt = new Date(y, m - 1 + (d >= payDay ? 1 : 0), payDay);
+    return Parser.ymd(dt);
+  }
+
   function openForm(t, preset) {
     const isNew = !t;
-    t = t || Object.assign({ id: uid(), type: 'expense', amount: '', date: selDay, category: '식비', memo: '', cardId: (S.cards.find(c => c.isDefault) || {}).id || null, payment: S.cards.some(c => c.isDefault) ? 'card' : 'none' }, preset || {});
+    t = t || Object.assign({ id: uid(), type: 'expense', amount: '', date: selDay, category: '식비', memo: '', installment: 1, interestFree: true, cardId: (S.cards.find(c => c.isDefault) || {}).id || null, payment: S.cards.some(c => c.isDefault) ? 'card' : 'none' }, preset || {});
+    const instOpts = [1, 2, 3, 4, 5, 6, 10, 12, 18, 24, 36];
+    const initInst = t.installment || 1;
+    if (!instOpts.includes(initInst)) instOpts.push(initInst);
+    instOpts.sort((a, b) => a - b);
     openModal(`<h3 style="margin-top:0">${isNew ? '내역 추가' : '내역 수정'}</h3>
-      ${isNew ? `<label>🎤 문장으로 입력 (예: 어제 삼성이로 점심 만원)</label><div style="display:flex;gap:6px"><input id="fSent" placeholder="말하듯이 적어보세요"><button class="btn" id="fParse" style="white-space:nowrap">분석</button></div>` : ''}
+      ${isNew ? `<div style="display:flex;gap:6px;margin-bottom:8px"><button type="button" class="btn gray" id="fPhoto" style="flex:1">📷 영수증 사진 올리기</button></div>
+        <label>🎤 문장으로 입력 (예: 어제 삼성이로 점심 만원)</label><div style="display:flex;gap:6px"><input id="fSent" placeholder="말하듯이 적어보세요"><button class="btn" id="fParse" style="white-space:nowrap">분석</button></div>` : ''}
       <div class="seg" style="margin-top:10px"><button class="e" data-t="expense">지출</button><button class="i" data-t="income">수입</button></div>
-      <label>금액</label><input id="fAmt" type="number" inputmode="numeric" value="${t.amount}">
+      <label>금액 (할부면 총 결제금액)</label><input id="fAmt" type="number" inputmode="numeric" value="${t.amount}">
       <label>날짜</label><input id="fDate" type="date" value="${t.date}">
       <label>카테고리</label><select id="fCat"></select>
       <label>결제수단</label><select id="fPay"></select>
+      ${isNew ? `<div id="instWrap">
+        <label>할부</label><select id="fInst">${instOpts.map(n => `<option value="${n}" ${n === initInst ? 'selected' : ''}>${n === 1 ? '일시불' : n + '개월 할부'}</option>`).join('')}</select>
+        <div id="instDetail" style="display:none;margin-top:8px;padding:10px;border-radius:12px;background:var(--surface2)">
+          <label style="display:flex;align-items:center;gap:8px;margin:0 0 8px;color:var(--txt);font-size:14px"><input type="checkbox" id="fFree" style="width:auto" ${t.interestFree !== false ? 'checked' : ''}> 무이자 할부</label>
+          <div id="fRateBox" style="display:none"><label style="margin-top:0">연 할부 수수료율 (%)</label><input id="fRate" type="number" step="0.1" value="14.0"></div>
+          <label>첫 결제일 (카드 결제일 기준, 수정 가능)</label><input id="fFirstPay" type="date" value="${firstPayDate(t.date, (cardOf(t.cardId) || {}).payDay)}">
+          <div id="instPreview" class="note"></div>
+        </div>
+      </div>` : ''}
       <label>메모</label><input id="fMemo" value="${esc(t.memo)}">
       <div class="btns">${isNew ? '' : '<button class="btn red" id="fDel">삭제</button>'}<button class="btn gray" id="fCancel">취소</button><button class="btn" id="fSave">저장</button></div>`);
     let type = t.type;
@@ -336,19 +366,80 @@
       const cats = type === 'income' ? INC_CATS : EXP_CATS;
       $('#fCat').innerHTML = cats.map(c => `<option ${c === t.category ? 'selected' : ''}>${c}</option>`).join('');
       $('#fPay').innerHTML = `<option value="none">선택 안 함</option><option value="cash" ${t.payment === 'cash' ? 'selected' : ''}>현금</option>` + S.cards.map(c => `<option value="${c.id}" ${t.cardId === c.id ? 'selected' : ''}>${c.emoji || '💳'} ${esc(c.nickname || c.name)} (${esc(c.name)})</option>`).join('');
+      if (isNew) $('#instWrap').style.display = type === 'expense' ? 'block' : 'none';
     };
     fill();
+    const updateInst = (recalcDate) => {
+      if (!isNew) return;
+      const n = +$('#fInst').value || 1;
+      $('#instDetail').style.display = (type === 'expense' && n > 1) ? 'block' : 'none';
+      if (n <= 1) return;
+      const free = $('#fFree').checked;
+      $('#fRateBox').style.display = free ? 'none' : 'block';
+      if (recalcDate) {
+        const c = cardOf($('#fPay').value);
+        $('#fFirstPay').value = firstPayDate($('#fDate').value, c && c.payDay);
+      }
+      const amt = +$('#fAmt').value || 0;
+      const rate = free ? 0 : (+$('#fRate').value || 0);
+      const totalPay = free ? amt : Math.round(amt * (1 + (rate / 100) * (n + 1) / 24));
+      const per = Math.floor(totalPay / n);
+      const fp = $('#fFirstPay').value || $('#fDate').value;
+      $('#instPreview').textContent = amt > 0
+        ? `월 ${won(per)} × ${n}개월 (${free ? '무이자' : '이자 포함 총 ' + won(totalPay)}) · ${fp.slice(5)}부터 매월 기록`
+        : '금액을 입력하면 월 납입금이 계산돼요';
+    };
+    if (isNew) {
+      updateInst(false);
+      $('#fPhoto').onclick = () => { closeModal(); $('#receiptFile').click(); };
+      $('#fInst').onchange = () => updateInst(true);
+      $('#fFree').onchange = () => updateInst(false);
+      $('#fAmt').oninput = () => updateInst(false);
+      $('#fRate').oninput = () => updateInst(false);
+      $('#fPay').onchange = () => updateInst(true);
+      $('#fDate').onchange = () => updateInst(true);
+      $('#fFirstPay').onchange = () => updateInst(false);
+    }
     document.querySelectorAll('.seg button').forEach(b => b.onclick = () => { type = b.dataset.t; t.category = type === 'income' ? '급여' : '식비'; fill(); });
     $('#fCancel').onclick = closeModal;
-    if (!isNew) $('#fDel').onclick = () => { S.txs = S.txs.filter(x => x.id !== t.id); save(); closeModal(); render(); };
+    if (!isNew) $('#fDel').onclick = () => {
+      if (t.installmentGroup) {
+        const cnt = S.txs.filter(x => x.installmentGroup === t.installmentGroup).length;
+        if (cnt > 1 && confirm(`같은 할부 내역이 ${cnt}건 있어요.\n확인: ${cnt}건 모두 삭제 / 취소: 이 회차만 삭제`)) {
+          S.txs = S.txs.filter(x => x.installmentGroup !== t.installmentGroup);
+        } else S.txs = S.txs.filter(x => x.id !== t.id);
+      } else S.txs = S.txs.filter(x => x.id !== t.id);
+      save(); closeModal(); render();
+    };
     if (isNew) $('#fParse').onclick = () => { const r = Parser.parseTransaction($('#fSent').value, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() }); closeModal(); openForm(null, r); };
     $('#fSave').onclick = () => {
       const amt = +$('#fAmt').value; if (!(amt > 0)) return toast('금액을 입력해 주세요');
       const pay = $('#fPay').value;
-      Object.assign(t, { type, amount: amt, date: $('#fDate').value, category: $('#fCat').value, memo: $('#fMemo').value, cardId: cardOf(pay) ? pay : null, payment: cardOf(pay) ? 'card' : pay });
-      if (isNew) S.txs.push(t);
-      save(); selDay = t.date; const d = new Date(t.date); cur = new Date(d.getFullYear(), d.getMonth(), 1);
-      closeModal(); render(); toast('저장됐어요');
+      const cardId = cardOf(pay) ? pay : null, payment = cardId ? 'card' : pay;
+      const n = (isNew && type === 'expense') ? (+$('#fInst').value || 1) : 1;
+      if (n > 1) {
+        const free = $('#fFree').checked;
+        const rate = free ? 0 : (+$('#fRate').value || 0);
+        const totalPay = free ? amt : Math.round(amt * (1 + (rate / 100) * (n + 1) / 24));
+        const base = Math.floor(totalPay / n), rem = totalPay - base * n;
+        const fp = $('#fFirstPay').value || $('#fDate').value;
+        const gid = uid(), memo = $('#fMemo').value.trim() || $('#fCat').value;
+        for (let i = 0; i < n; i++) {
+          S.txs.push({
+            id: uid(), type: 'expense', amount: i === 0 ? base + rem : base,
+            date: addMonths(fp, i), category: $('#fCat').value,
+            memo: `[${i + 1}/${n}] ${memo}`, cardId, payment,
+            installmentGroup: gid, installmentInfo: `${i + 1}/${n}`
+          });
+        }
+        save(); selDay = fp; const d = new Date(fp); cur = new Date(d.getFullYear(), d.getMonth(), 1);
+        closeModal(); render(); toast(`${n}개월 할부(${won(base)}/월)로 등록됐어요`);
+      } else {
+        Object.assign(t, { type, amount: amt, date: $('#fDate').value, category: $('#fCat').value, memo: $('#fMemo').value, cardId, payment });
+        if (isNew) S.txs.push(t);
+        save(); selDay = t.date; const d = new Date(t.date); cur = new Date(d.getFullYear(), d.getMonth(), 1);
+        closeModal(); render(); toast('저장됐어요');
+      }
     };
   }
 
@@ -373,6 +464,7 @@
       <label>혜택 (적립/할인율 %, 카테고리별)</label><textarea id="cRules" rows="3" placeholder="기본:0.5, 식비:5, 교통:10, 쇼핑:3">${esc(rulesToStr(c))}</textarea>
       <label>전월실적 조건 (원, 없으면 0)</label><input id="cMin" type="number" value="${c.minSpend || 0}">
       <label>월 적립/할인 한도 (원, 없으면 0)</label><input id="cCap" type="number" value="${c.cap || 0}">
+      <label>카드 결제일 (매월 1~28일, 할부 시 이 날짜에 자동 기록 · 없으면 0)</label><input id="cPayDay" type="number" min="0" max="28" value="${c.payDay || 0}">
       <label style="display:flex;align-items:center;gap:8px;margin-top:16px;color:var(--txt);font-size:14px"><input type="checkbox" id="cDef" style="width:auto" ${c.isDefault ? 'checked' : ''}> ⭐ 기본 카드로 설정 (카드를 말하지 않으면 이 카드로 결제한 걸로 기록)</label>
       <div class="btns">${isNew ? '' : '<button class="btn red" id="cDel">삭제</button>'}<button class="btn gray" id="cCancel">취소</button><button class="btn" id="cSave">저장</button></div>`);
     $('#cCancel').onclick = closeModal;
@@ -401,7 +493,7 @@
     $('#cSave').onclick = () => {
       if (!$('#cName').value.trim()) return toast('카드 이름을 입력해 주세요');
       const { rules, def } = parseRules($('#cRules').value);
-      Object.assign(c, { company: $('#cCompany').value, name: $('#cName').value.trim(), nickname: $('#cNick').value.trim(), kind: $('#cKind').value, rules, defaultRate: def, minSpend: +$('#cMin').value || 0, cap: +$('#cCap').value || 0 });
+      Object.assign(c, { company: $('#cCompany').value, name: $('#cName').value.trim(), nickname: $('#cNick').value.trim(), kind: $('#cKind').value, rules, defaultRate: def, minSpend: +$('#cMin').value || 0, cap: +$('#cCap').value || 0, payDay: Math.min(28, Math.max(0, +$('#cPayDay').value || 0)) });
       if (isNew) S.cards.push(c);
       c.isDefault = $('#cDef').checked;
       if (c.isDefault) S.cards.forEach(x => { if (x.id !== c.id) x.isDefault = false; });
@@ -470,6 +562,42 @@
     $('#undoV').onclick = () => { S.txs = S.txs.filter(x => x.id !== tx.id); save(); t.classList.add('hidden'); render(); };
   }
   $('#addBtn').onclick = () => openForm();
+
+  // ---------- 영수증 사진 분석 (브라우저 OCR) ----------
+  function loadTesseract() {
+    if (window.Tesseract) return Promise.resolve(window.Tesseract);
+    return new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+      s.onload = () => res(window.Tesseract);
+      s.onerror = () => rej(new Error('OCR 엔진 로드 실패 (인터넷 연결을 확인해 주세요)'));
+      document.head.appendChild(s);
+    });
+  }
+  async function scanReceipt(file) {
+    toast('🔍 영수증 글자를 읽고 있어요... (첫 실행은 5~10초 걸릴 수 있어요)');
+    try {
+      const T = await loadTesseract();
+      const { data: { text } } = await T.recognize(file, 'kor+eng', {
+        logger: m => { if (m.status === 'recognizing text') toast(`🔍 영수증 분석 중... ${Math.round((m.progress || 0) * 100)}%`); }
+      });
+      const r = Parser.parseReceipt(text, {
+        cards: S.cards, now: nowKST(),
+        defaultCardId: (S.cards.find(c => c.isDefault) || {}).id,
+        keywords: S.keywords
+      });
+      toast(r.ok ? '영수증을 읽어왔어요! 확인 후 저장해 주세요 ✨' : '금액을 못 찾았어요. 직접 입력해 주세요');
+      openForm(null, r);
+    } catch (err) {
+      toast('영수증 분석 오류: ' + (err.message || err));
+      openForm();
+    }
+  }
+  $('#photoBtn').onclick = () => $('#receiptFile').click();
+  $('#receiptFile').onchange = e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (f) scanReceipt(f);
+  };
 
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
   $('#prevM').onclick = () => { cur.setMonth(cur.getMonth() - 1); render(); };

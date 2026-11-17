@@ -24,7 +24,7 @@
   const CATEGORIES = {
     식비: ['점심', '저녁', '아침', '밥', '식당', '카페', '커피', '스타벅스', '배달', '치킨', '피자', '맥도날드', '버거', '음식', '배민', '요기요', '편의점', '술', '맥주', '간식', '빵', '마트', '장보기', '식비'],
     교통: ['택시', '버스', '지하철', '기름', '주유', '교통', '카카오택시', '기차', 'ktx', '주차', '톨게이트', '하이패스'],
-    쇼핑: ['쿠팡', '충전기', '옷', '신발', '네이버쇼핑', '쇼핑', '가방', '지마켓', '11번가', '올리브영', '무신사', '다이소', '이케아', '컴퓨터', '노트북', '이어폰', '케이스', '가전'],
+    쇼핑: ['쿠팡', '충전기', '옷', '신발', '네이버쇼핑', '쇼핑', '가방', '지마켓', '11번가', '올리브영', '무신사', '다이소', '이케아', '컴퓨터', '노트북', '이어폰', '케이스', '가전', '아이폰', '애플', 'apple', '갤럭시', '자급제'],
     생활: ['세제', '휴지', '생필품', '청소', '수리', '가구', '생활'],
     주거통신: ['월세', '관리비', '전기', '가스', '수도', '인터넷', '통신', '핸드폰', '휴대폰', '요금'],
     의료건강: ['병원', '약', '약국', '치과', '헬스', '운동', '필라테스', '건강'],
@@ -144,7 +144,87 @@
     };
   }
 
-  const api = { parseTransaction, koreanToNumber, CATEGORIES, INCOME_CATEGORIES, ymd };
+  // 영수증 OCR 텍스트 → 거래 데이터 파서
+  function parseReceipt(text, ctx) {
+    ctx = ctx || {};
+    const cards = ctx.cards || [];
+    const now = ctx.now || new Date();
+    const lines = String(text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    const full = lines.join('\n');
+
+    // 1. 날짜 (YYYY/MM/DD, YYYY-MM-DD, YYYY.MM.DD)
+    let date = ymd(now);
+    const dm = full.match(/(20\d{2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,2})/);
+    if (dm) date = `${dm[1]}-${dm[2].padStart(2, '0')}-${dm[3].padStart(2, '0')}`;
+
+    // 2. 할부개월
+    let installment = 1;
+    const im = full.match(/(?:할부(?:개월)?\s*[:：]?\s*)?(\d{1,2})\s*(?:개월|months?|개월할부)/i);
+    if (im && +im[1] >= 2 && +im[1] <= 60) installment = +im[1];
+    const interestFree = !/유이자/.test(full);
+
+    // 3. 합계/결제/승인 금액 우선 추출
+    let amount = 0;
+    const amRe = /(?:합계금액|총\s?결제금액|결제금액|승인금액|합계|총액|총금액)\s*[:：]?\s*([0-9][0-9,.\s]*)\s*원?/;
+    const am = full.match(amRe);
+    if (am) amount = parseInt(am[1].replace(/[^0-9]/g, ''), 10) || 0;
+    if (!amount) {
+      const nums = [...full.matchAll(/([1-9][0-9,]{2,})\s*원/g)].map(x => parseInt(x[1].replace(/,/g, ''), 10)).filter(n => n > 0 && n < 1e9);
+      if (nums.length) amount = Math.max(...nums);
+    }
+
+    // 4. 카드 매칭
+    let card = null;
+    const ALIASES = [['국민', 'KB'], ['삼성', '삼성카드'], ['신한', '신한카드'], ['현대', '현대카드'], ['롯데', '롯데카드'], ['우리', '우리카드'], ['하나', '하나카드'], ['농협', 'NH'], ['비씨', 'BC'], ['토스', '토스뱅크'], ['카카오', '카카오뱅크']];
+    for (const c of cards) {
+      const keys = [c.name, c.nickname, c.company].filter(Boolean);
+      if (keys.some(k => k.length >= 2 && full.toLowerCase().includes(k.replace(/카드|뱅크/g, '').toLowerCase()))) { card = c; break; }
+      for (const grp of ALIASES) {
+        if (grp.some(a => (c.company || c.name || '').toUpperCase().includes(a.toUpperCase())) && grp.some(a => full.toUpperCase().includes(a.toUpperCase()))) {
+          card = c; break;
+        }
+      }
+      if (card) break;
+    }
+    if (!card && ctx.defaultCardId) card = cards.find(c => c.id === ctx.defaultCardId) || null;
+
+    // 5. 상품명 / 상호 추출 (다음 라벨 전까지)
+    const grab = (labelRe, stopRe) => {
+      for (let i = 0; i < lines.length; i++) {
+        if (labelRe.test(lines[i])) {
+          let val = lines[i].replace(labelRe, '').trim();
+          if (i + 1 < lines.length && !stopRe.test(lines[i + 1]) && val.length < 40) {
+            // 다음 줄이 이어지는 상품명일 수 있음 (숫자+원이나 라벨이 아닐 때)
+            if (!/[0-9,]+\s*원$/.test(lines[i + 1])) val = (val + ' ' + lines[i + 1]).trim();
+          }
+          if (val) return val;
+        }
+      }
+      return '';
+    };
+    const stopLabels = /^(과세금액|비과세|부가세|합계|주문번호|판매자|이용상점|사업자|주소|거래일시|승인번호|카드|할부)/;
+    const prod = grab(/^상품명\s*[:：]?\s*/, stopLabels);
+    const shop = grab(/^(?:판매자상호|가맹점명|상호)\s*[:：]?\s*/, stopLabels).replace(/\(주\)|주식회사/g, '').trim();
+    let memo = [shop, prod].filter(Boolean).join(' · ') || '카드영수증';
+    if (memo.length > 45) memo = memo.slice(0, 45);
+
+    // 6. 카테고리
+    let category = null;
+    for (const [cat, words] of Object.entries(ctx.keywords || {})) {
+      if ((words || []).some(w => w && full.includes(w))) { category = cat; break; }
+    }
+    if (!category) category = matchCategory(full + ' ' + memo, CATEGORIES, '기타지출');
+
+    return {
+      type: 'expense', amount, date, category, memo,
+      installment, interestFree,
+      cardId: card ? card.id : null,
+      payment: card ? 'card' : 'none',
+      ok: amount > 0
+    };
+  }
+
+  const api = { parseTransaction, parseReceipt, koreanToNumber, CATEGORIES, INCOME_CATEGORIES, ymd };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Parser = api;
 })(typeof window !== 'undefined' ? window : globalThis);
