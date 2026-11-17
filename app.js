@@ -1,0 +1,298 @@
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const KEY = 'howSpendMoney.v1';
+  const EXP_CATS = Object.keys(Parser.CATEGORIES);
+  const INC_CATS = Object.keys(Parser.INCOME_CATEGORIES);
+  const ICON = { 식비: '🍚', 교통: '🚌', 쇼핑: '🛍️', 생활: '🧻', 주거통신: '🏠', 의료건강: '💊', 문화여가: '🎬', 교육: '📚', 경조사: '🎁', 미용: '💇', 기타지출: '💸', 급여: '💰', 용돈: '🧧', 부수입: '💵', 기타수입: '➕' };
+  const won = n => Math.round(n).toLocaleString('ko-KR') + '원';
+  const uid = () => Math.random().toString(36).slice(2, 10);
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  let S = load();
+  let cur = new Date(); cur.setDate(1);
+  let selDay = Parser.ymd(new Date());
+  let tab = 'calendar';
+  let query = '';
+
+  function load() {
+    try { const d = JSON.parse(localStorage.getItem(KEY)); if (d) return d; } catch (e) {}
+    return { txs: [], cards: [], settings: { salary: 0, budget: 0 } };
+  }
+  const save = () => localStorage.setItem(KEY, JSON.stringify(S));
+  const mKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  const curKey = () => mKey(cur);
+  const prevKey = () => { const d = new Date(cur); d.setMonth(d.getMonth() - 1); return mKey(d); };
+  const monthTxs = k => S.txs.filter(t => t.date.startsWith(k));
+  const cardOf = id => S.cards.find(c => c.id === id);
+  function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.remove('hidden'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.add('hidden'), 2600); }
+
+  // ---------- 카드 혜택 계산 ----------
+  function rateOf(card, cat) {
+    if (card.rules && card.rules[cat] != null) return card.rules[cat];
+    return card.defaultRate || 0;
+  }
+  function parseRules(str) {
+    const rules = {}; let def = 0;
+    (str || '').split(/[,\n]/).forEach(p => {
+      const m = p.split(/[:=]/); if (m.length < 2) return;
+      const k = m[0].trim(), v = parseFloat(m[1]);
+      if (isNaN(v)) return;
+      if (/기본|전체|default/.test(k)) def = v; else rules[k] = v;
+    });
+    return { rules, def };
+  }
+  const rulesToStr = c => ['기본:' + (c.defaultRate || 0), ...Object.entries(c.rules || {}).map(([k, v]) => k + ':' + v)].join(', ');
+
+  function cardStats(key, pKey) {
+    const out = {};
+    S.cards.forEach(c => {
+      const spend = monthTxs(key).filter(t => t.type === 'expense' && t.cardId === c.id).reduce((a, t) => a + t.amount, 0);
+      const prev = monthTxs(pKey).filter(t => t.type === 'expense' && t.cardId === c.id).reduce((a, t) => a + t.amount, 0);
+      let pts = monthTxs(key).filter(t => t.type === 'expense' && t.cardId === c.id).reduce((a, t) => a + t.amount * rateOf(c, t.category) / 100, 0);
+      const eligible = !c.minSpend || prev >= c.minSpend;
+      if (c.cap && pts > c.cap) pts = c.cap;
+      out[c.id] = { spend, prev, pts, eligible };
+    });
+    return out;
+  }
+
+  // ---------- 렌더 ----------
+  function render() {
+    $('#monthTitle').textContent = cur.getFullYear() + '년 ' + (cur.getMonth() + 1) + '월';
+    const txs = monthTxs(curKey());
+    const inc = txs.filter(t => t.type === 'income').reduce((a, t) => a + t.amount, 0);
+    const exp = txs.filter(t => t.type === 'expense').reduce((a, t) => a + t.amount, 0);
+    $('#summary').innerHTML = `<div><small>수입</small><b class="inc">${won(inc)}</b></div><div><small>지출</small><b class="exp">${won(exp)}</b></div><div><small>합계</small><b>${won(inc - exp)}</b></div>`;
+    document.querySelectorAll('.tab').forEach(e => e.classList.toggle('active', e.id === 'tab-' + tab));
+    document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+    ({ calendar: renderCalendar, list: renderList, stats: renderStats, cards: renderCards, settings: renderSettings })[tab]();
+  }
+
+  function txRow(t) {
+    const c = cardOf(t.cardId);
+    const pay = c ? c.nickname || c.name : (t.payment === 'cash' ? '현금' : '');
+    return `<div class="tx" data-id="${t.id}"><div class="ic">${ICON[t.category] || '💸'}</div>
+      <div class="mid"><div>${esc(t.memo || t.category)}</div><small>${t.category}${pay ? ' · ' + esc(pay) : ''}${t.date ? ' · ' + t.date.slice(5) : ''}</small></div>
+      <div class="amt ${t.type === 'income' ? 'inc' : 'exp'}">${t.type === 'income' ? '+' : '-'}${won(t.amount)}</div></div>`;
+  }
+  function bindTx(root) { root.querySelectorAll('.tx').forEach(e => e.onclick = () => openForm(S.txs.find(t => t.id === e.dataset.id))); }
+
+  function renderCalendar() {
+    const el = $('#tab-calendar');
+    const y = cur.getFullYear(), m = cur.getMonth();
+    const first = new Date(y, m, 1).getDay(), days = new Date(y, m + 1, 0).getDate();
+    const todayS = Parser.ymd(new Date());
+    const byDay = {};
+    monthTxs(curKey()).forEach(t => { (byDay[t.date] ||= { i: 0, e: 0 })[t.type === 'income' ? 'i' : 'e'] += t.amount; });
+    let h = '<div class="cal">' + '일월화수목금토'.split('').map(d => `<div class="dow">${d}</div>`).join('');
+    for (let i = 0; i < first; i++) h += '<div></div>';
+    for (let d = 1; d <= days; d++) {
+      const ds = `${curKey()}-${String(d).padStart(2, '0')}`, w = (first + d - 1) % 7, b = byDay[ds];
+      h += `<div class="day ${ds === todayS ? 'today' : ''} ${ds === selDay ? 'sel' : ''} ${w === 0 ? 'sun' : w === 6 ? 'sat' : ''}" data-d="${ds}"><div class="n">${d}</div>${b?.i ? `<div class="i">+${b.i.toLocaleString()}</div>` : ''}${b?.e ? `<div class="e">-${b.e.toLocaleString()}</div>` : ''}</div>`;
+    }
+    h += '</div>';
+    const list = S.txs.filter(t => t.date === selDay);
+    h += `<div class="box" style="margin-top:12px"><h3>${selDay} 내역</h3>${list.length ? list.map(txRow).join('') : '<div class="empty">내역이 없어요</div>'}</div>`;
+    el.innerHTML = h;
+    el.querySelectorAll('.day').forEach(e => e.onclick = () => { selDay = e.dataset.d; renderCalendar(); });
+    bindTx(el);
+  }
+
+  function renderList() {
+    const el = $('#tab-list');
+    let txs = monthTxs(curKey()).sort((a, b) => b.date.localeCompare(a.date));
+    if (query) txs = txs.filter(t => (t.memo + t.category).includes(query));
+    let h = `<input id="q" placeholder="🔍 검색 (메모/카테고리)" value="${esc(query)}">`;
+    if (!txs.length) h += '<div class="empty">내역이 없어요</div>';
+    let last = '';
+    for (const t of txs) {
+      if (t.date !== last) { last = t.date; const day = S.txs.filter(x => x.date === t.date);
+        h += `<div class="dayhdr"><span>${t.date.slice(5)} (${'일월화수목금토'[new Date(t.date).getDay()]})</span><span>-${won(day.filter(x => x.type === 'expense').reduce((a, x) => a + x.amount, 0))}</span></div>`; }
+      h += `<div class="box" style="padding:0 12px;margin-bottom:4px">${txRow(t)}</div>`;
+    }
+    el.innerHTML = h; bindTx(el);
+    $('#q').oninput = e => { query = e.target.value; const pos = e.target.selectionStart; renderList(); const q = $('#q'); q.focus(); q.setSelectionRange(pos, pos); };
+  }
+
+  function renderStats() {
+    const el = $('#tab-stats');
+    const txs = monthTxs(curKey()).filter(t => t.type === 'expense');
+    const total = txs.reduce((a, t) => a + t.amount, 0);
+    const by = {}; txs.forEach(t => by[t.category] = (by[t.category] || 0) + t.amount);
+    const arr = Object.entries(by).sort((a, b) => b[1] - a[1]);
+    const bud = +S.settings.budget || 0;
+    let h = '';
+    if (bud) { const p = Math.min(100, total / bud * 100);
+      h += `<div class="box"><h3>이번 달 예산</h3><div class="bar ${total > bud ? 'over' : ''}"><i style="width:${p}%"></i></div>
+      <p class="muted">${won(total)} / ${won(bud)} (${Math.round(total / bud * 100)}%) · ${total > bud ? '<b class="exp">' + won(total - bud) + ' 초과</b>' : '남은 예산 ' + won(bud - total)}</p></div>`; }
+    h += `<div class="box"><h3>카테고리별 지출</h3>${arr.length ? arr.map(([k, v]) => `<div class="row"><span class="l">${ICON[k] || ''} ${k}</span><div class="bar"><i style="width:${v / arr[0][1] * 100}%"></i></div><span class="r">${won(v)}<br><small class="muted">${Math.round(v / total * 100)}%</small></span></div>`).join('') : '<div class="empty">지출이 없어요</div>'}</div>`;
+    // 최근 6개월 추이
+    const months = []; for (let i = 5; i >= 0; i--) { const d = new Date(cur); d.setMonth(d.getMonth() - i); months.push(mKey(d)); }
+    const vals = months.map(k => monthTxs(k).filter(t => t.type === 'expense').reduce((a, t) => a + t.amount, 0)); const mx = Math.max(...vals, 1);
+    h += `<div class="box"><h3>최근 6개월 지출</h3>${months.map((k, i) => `<div class="row"><span class="l">${k.slice(2)}</span><div class="bar"><i style="width:${vals[i] / mx * 100}%"></i></div><span class="r">${won(vals[i])}</span></div>`).join('')}</div>`;
+    el.innerHTML = h;
+  }
+
+  function renderCards() {
+    const el = $('#tab-cards');
+    const st = cardStats(curKey(), prevKey());
+    let h = '<div class="box"><h3>💳 내 카드</h3>';
+    if (!S.cards.length) h += '<div class="empty">카드를 등록하면 포인트/절약 분석을 볼 수 있어요</div>';
+    S.cards.forEach(c => {
+      const s = st[c.id];
+      h += `<div class="tx" data-card="${c.id}"><div class="ic">${c.kind === 'check' ? '🏧' : '💳'}</div><div class="mid">
+        <div><b>${esc(c.name)}</b><span class="badge">별명 ${esc(c.nickname || '-')}</span><span class="badge">${c.kind === 'check' ? '체크' : '신용'}</span></div>
+        <small>사용 ${won(s.spend)} · 예상 적립/할인 <b class="inc">${won(s.pts)}</b>${c.cap ? ' (한도 ' + won(c.cap) + ')' : ''}</small>
+        ${c.minSpend ? `<br><small style="color:${s.eligible ? 'var(--inc)' : 'var(--exp)'}">전월실적 ${won(s.prev)} / ${won(c.minSpend)} ${s.eligible ? '✔ 충족' : '✖ 미충족 (혜택 못 받을 수 있어요)'}</small>` : ''}
+      </div></div>`;
+    });
+    h += '<div class="btns"><button class="btn" id="addCard">+ 카드 추가</button></div></div>';
+
+    // 절약 분석
+    const txs = monthTxs(curKey()).filter(t => t.type === 'expense');
+    const totalPts = Object.values(st).reduce((a, s) => a + s.pts, 0);
+    h += `<div class="box"><h3>💡 절약 분석</h3>`;
+    if (S.cards.length) {
+      h += `<div class="tip good">이번 달 카드로 받은 예상 포인트/할인: <b>${won(totalPts)}</b></div>`;
+      const byCat = {};
+      txs.forEach(t => {
+        const used = cardOf(t.cardId);
+        const usedRate = used ? rateOf(used, t.category) : 0;
+        let best = null;
+        S.cards.forEach(c => { const r = rateOf(c, t.category); if (!best || r > best.r) best = { c, r }; });
+        if (best && best.r > usedRate) {
+          const o = byCat[t.category] ||= { gain: 0, spend: 0, best, usedRate: 0, n: 0 };
+          o.gain += t.amount * (best.r - usedRate) / 100; o.spend += t.amount; o.n++;
+        }
+      });
+      const recs = Object.entries(byCat).sort((a, b) => b[1].gain - a[1].gain);
+      let totalGain = 0;
+      recs.forEach(([cat, o]) => {
+        totalGain += o.gain;
+        h += `<div class="tip"><b>${ICON[cat] || ''} ${cat}</b> ${won(o.spend)} 사용 → <b>${esc(o.best.c.nickname || o.best.c.name)}</b> (${o.best.r}%)로 결제했다면 <b>${won(o.gain)}</b> 더 절약!</div>`;
+      });
+      if (recs.length) h += `<div class="tip">총 <b>${won(totalGain)}</b>을 더 아낄 수 있었어요.</div>`;
+      else if (txs.length) h += '<div class="tip good">카드를 잘 활용하고 있어요! 더 유리한 카드가 없어요 👍</div>';
+      const cashSpend = txs.filter(t => !t.cardId).reduce((a, t) => a + t.amount, 0);
+      if (cashSpend) h += `<div class="tip">카드 없이(현금/미지정) 쓴 금액 ${won(cashSpend)} — 카드로 결제하면 포인트를 받을 수 있어요.</div>`;
+      // 카테고리별 최고 카드 표
+      h += '<h3 style="margin-top:12px">카테고리별 추천 카드</h3>';
+      EXP_CATS.filter(c => c !== '기타지출').forEach(cat => {
+        let best = null; S.cards.forEach(c => { const r = rateOf(c, cat); if (!best || r > best.r) best = { c, r }; });
+        if (best && best.r > 0) h += `<div class="row"><span class="l">${ICON[cat]} ${cat}</span><span style="flex:1">${esc(best.c.nickname || best.c.name)}</span><span class="r inc">${best.r}%</span></div>`;
+      });
+    } else h += '<div class="empty">카드를 등록해 주세요</div>';
+    h += '</div>';
+    el.innerHTML = h;
+    $('#addCard').onclick = () => openCardForm();
+    el.querySelectorAll('[data-card]').forEach(e => e.onclick = () => openCardForm(cardOf(e.dataset.card)));
+  }
+
+  function renderSettings() {
+    const el = $('#tab-settings');
+    el.innerHTML = `<div class="box"><h3>기본 정보</h3>
+      <label>월급 (음성으로 "월급 들어왔어" 라고 하면 자동 입력돼요)</label><input id="sSalary" type="number" value="${S.settings.salary || ''}">
+      <label>월 예산</label><input id="sBudget" type="number" value="${S.settings.budget || ''}">
+      <div class="btns"><button class="btn" id="sSave">저장</button></div></div>
+    <div class="box"><h3>데이터</h3><div class="btns">
+      <button class="btn gray" id="exJson">백업(JSON)</button><button class="btn gray" id="exCsv">CSV 내보내기</button><button class="btn gray" id="imJson">불러오기</button></div>
+      <div class="btns"><button class="btn red" id="reset">전체 삭제</button></div>
+      <input type="file" id="file" accept=".json" style="display:none"></div>
+    <div class="box"><h3>🎤 음성 입력 예시</h3><p class="muted">"쿠팡에서 오늘 삼성이로 삼만원짜리 충전기 샀어"<br>"어제 롯데로 점심 만이천원"<br>"월급 들어왔어" (설정한 월급 자동 입력)<br>"용돈 오만원 받았어"<br>카드 별명은 [카드혜택] 탭에서 등록하세요.</p></div>`;
+    $('#sSave').onclick = () => { S.settings.salary = +$('#sSalary').value || 0; S.settings.budget = +$('#sBudget').value || 0; save(); toast('저장됐어요'); render(); };
+    $('#exJson').onclick = () => download('가계부백업.json', JSON.stringify(S, null, 2), 'application/json');
+    $('#exCsv').onclick = () => download('가계부.csv', '\ufeff날짜,구분,카테고리,금액,결제수단,메모\n' + S.txs.map(t => [t.date, t.type === 'income' ? '수입' : '지출', t.category, t.amount, cardOf(t.cardId)?.name || (t.payment === 'cash' ? '현금' : ''), '"' + (t.memo || '').replace(/"/g, '""') + '"'].join(',')).join('\n'), 'text/csv');
+    $('#imJson').onclick = () => $('#file').click();
+    $('#file').onchange = e => { const f = e.target.files[0]; if (!f) return; f.text().then(x => { try { const d = JSON.parse(x); if (!d.txs) throw 0; S = d; save(); render(); toast('불러왔어요'); } catch (err) { toast('올바른 파일이 아니에요'); } }); };
+    $('#reset').onclick = () => { if (confirm('모든 데이터를 삭제할까요?')) { S = { txs: [], cards: [], settings: { salary: 0, budget: 0 } }; save(); render(); } };
+  }
+  function download(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); }
+
+  // ---------- 모달 ----------
+  const closeModal = () => $('#modal').classList.add('hidden');
+  const openModal = html => { $('#modalBox').innerHTML = html; $('#modal').classList.remove('hidden'); };
+  $('#modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
+
+  function openForm(t, preset) {
+    const isNew = !t;
+    t = t || Object.assign({ id: uid(), type: 'expense', amount: '', date: selDay, category: '식비', memo: '', cardId: null, payment: 'none' }, preset || {});
+    openModal(`<h3 style="margin-top:0">${isNew ? '내역 추가' : '내역 수정'}</h3>
+      ${isNew ? `<label>🎤 문장으로 입력 (예: 어제 삼성이로 점심 만원)</label><div style="display:flex;gap:6px"><input id="fSent" placeholder="말하듯이 적어보세요"><button class="btn" id="fParse" style="white-space:nowrap">분석</button></div>` : ''}
+      <div class="seg" style="margin-top:10px"><button class="e" data-t="expense">지출</button><button class="i" data-t="income">수입</button></div>
+      <label>금액</label><input id="fAmt" type="number" inputmode="numeric" value="${t.amount}">
+      <label>날짜</label><input id="fDate" type="date" value="${t.date}">
+      <label>카테고리</label><select id="fCat"></select>
+      <label>결제수단</label><select id="fPay"></select>
+      <label>메모</label><input id="fMemo" value="${esc(t.memo)}">
+      <div class="btns">${isNew ? '' : '<button class="btn red" id="fDel">삭제</button>'}<button class="btn gray" id="fCancel">취소</button><button class="btn" id="fSave">저장</button></div>`);
+    let type = t.type;
+    const fill = () => {
+      document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.t === type));
+      document.querySelectorAll('.seg button').forEach(b => b.classList.toggle(b.classList[0], true));
+      const cats = type === 'income' ? INC_CATS : EXP_CATS;
+      $('#fCat').innerHTML = cats.map(c => `<option ${c === t.category ? 'selected' : ''}>${c}</option>`).join('');
+      $('#fPay').innerHTML = `<option value="none">선택 안 함</option><option value="cash" ${t.payment === 'cash' ? 'selected' : ''}>현금</option>` + S.cards.map(c => `<option value="${c.id}" ${t.cardId === c.id ? 'selected' : ''}>${esc(c.name)}${c.nickname ? ' (' + esc(c.nickname) + ')' : ''}</option>`).join('');
+    };
+    fill();
+    document.querySelectorAll('.seg button').forEach(b => b.onclick = () => { type = b.dataset.t; t.category = type === 'income' ? '급여' : '식비'; fill(); });
+    $('#fCancel').onclick = closeModal;
+    if (!isNew) $('#fDel').onclick = () => { S.txs = S.txs.filter(x => x.id !== t.id); save(); closeModal(); render(); };
+    if (isNew) $('#fParse').onclick = () => { const r = Parser.parseTransaction($('#fSent').value, { cards: S.cards, salary: S.settings.salary }); closeModal(); openForm(null, r); };
+    $('#fSave').onclick = () => {
+      const amt = +$('#fAmt').value; if (!(amt > 0)) return toast('금액을 입력해 주세요');
+      const pay = $('#fPay').value;
+      Object.assign(t, { type, amount: amt, date: $('#fDate').value, category: $('#fCat').value, memo: $('#fMemo').value, cardId: cardOf(pay) ? pay : null, payment: cardOf(pay) ? 'card' : pay });
+      if (isNew) S.txs.push(t);
+      save(); selDay = t.date; const d = new Date(t.date); cur = new Date(d.getFullYear(), d.getMonth(), 1);
+      closeModal(); render(); toast('저장됐어요');
+    };
+  }
+
+  function openCardForm(c) {
+    const isNew = !c;
+    c = c || { id: uid(), name: '', nickname: '', kind: 'credit', defaultRate: 0.5, rules: {}, minSpend: 0, cap: 0 };
+    openModal(`<h3 style="margin-top:0">${isNew ? '카드 추가' : '카드 수정'}</h3>
+      <label>카드 이름</label><input id="cName" value="${esc(c.name)}" placeholder="삼성 iD ON 카드">
+      <label>별명 (음성 인식용)</label><input id="cNick" value="${esc(c.nickname)}" placeholder="삼성이">
+      <label>종류</label><select id="cKind"><option value="credit" ${c.kind === 'credit' ? 'selected' : ''}>신용카드</option><option value="check" ${c.kind === 'check' ? 'selected' : ''}>체크카드</option></select>
+      <label>혜택 (적립/할인율 %, 카테고리별)</label><textarea id="cRules" rows="3" placeholder="기본:0.5, 식비:5, 교통:10, 쇼핑:3">${esc(rulesToStr(c))}</textarea>
+      <label>전월실적 조건 (원, 없으면 0)</label><input id="cMin" type="number" value="${c.minSpend || 0}">
+      <label>월 적립/할인 한도 (원, 없으면 0)</label><input id="cCap" type="number" value="${c.cap || 0}">
+      <div class="btns">${isNew ? '' : '<button class="btn red" id="cDel">삭제</button>'}<button class="btn gray" id="cCancel">취소</button><button class="btn" id="cSave">저장</button></div>`);
+    $('#cCancel').onclick = closeModal;
+    if (!isNew) $('#cDel').onclick = () => { if (confirm('카드를 삭제할까요? (기존 내역은 유지)')) { S.cards = S.cards.filter(x => x.id !== c.id); S.txs.forEach(t => { if (t.cardId === c.id) { t.cardId = null; t.payment = 'none'; } }); save(); closeModal(); render(); } };
+    $('#cSave').onclick = () => {
+      if (!$('#cName').value.trim()) return toast('카드 이름을 입력해 주세요');
+      const { rules, def } = parseRules($('#cRules').value);
+      Object.assign(c, { name: $('#cName').value.trim(), nickname: $('#cNick').value.trim(), kind: $('#cKind').value, rules, defaultRate: def, minSpend: +$('#cMin').value || 0, cap: +$('#cCap').value || 0 });
+      if (isNew) S.cards.push(c);
+      save(); closeModal(); render();
+    };
+  }
+
+  // ---------- 음성 ----------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null;
+  $('#micBtn').onclick = () => {
+    if (!SR) { toast('이 브라우저는 음성인식을 지원하지 않아요 (Chrome 권장). 문장 입력을 사용해 보세요.'); return openForm(); }
+    if (rec) { rec.stop(); return; }
+    rec = new SR(); rec.lang = 'ko-KR'; rec.interimResults = false; rec.maxAlternatives = 1;
+    rec.onstart = () => { $('#micBtn').classList.add('rec'); toast('듣고 있어요... 말씀하세요'); };
+    rec.onresult = e => {
+      const text = e.results[0][0].transcript;
+      const r = Parser.parseTransaction(text, { cards: S.cards, salary: S.settings.salary });
+      toast('인식: ' + text);
+      if (r.ok && r.type === 'income' || r.ok) { r.memo = r.memo || text; }
+      openForm(null, r);
+    };
+    rec.onerror = e => toast('음성 인식 오류: ' + e.error + (e.error === 'not-allowed' ? ' (마이크 권한을 허용해 주세요)' : ''));
+    rec.onend = () => { $('#micBtn').classList.remove('rec'); rec = null; };
+    rec.start();
+  };
+  $('#addBtn').onclick = () => openForm();
+
+  document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
+  $('#prevM').onclick = () => { cur.setMonth(cur.getMonth() - 1); render(); };
+  $('#nextM').onclick = () => { cur.setMonth(cur.getMonth() + 1); render(); };
+  render();
+})();
