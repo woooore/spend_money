@@ -307,20 +307,60 @@
   let rec = null;
   $('#micBtn').onclick = () => {
     if (!SR) { toast('이 브라우저는 음성인식을 지원하지 않아요 (Chrome 권장). 문장 입력을 사용해 보세요.'); return openForm(); }
-    if (rec) { rec.stop(); return; }
-    rec = new SR(); rec.lang = 'ko-KR'; rec.interimResults = false; rec.maxAlternatives = 1;
-    rec.onstart = () => { $('#micBtn').classList.add('rec'); toast('듣고 있어요... 말씀하세요'); };
-    rec.onresult = e => {
-      const text = e.results[0][0].transcript;
-      const r = Parser.parseTransaction(text, { cards: S.cards, salary: S.settings.salary });
-      toast('인식: ' + text);
-      if (r.ok && r.type === 'income' || r.ok) { r.memo = r.memo || text; }
-      openForm(null, r);
+    if (rec) { rec.finish(); return; }   // 다시 누르면 바로 종료
+    const SILENCE_MS = 3000;             // 말이 멈춘 뒤 이만큼 기다렸다가 종료
+    const r = rec = new SR();
+    r.lang = 'ko-KR'; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+    let finalText = '', interim = '', done = false, timer = null;
+    const heard = () => (finalText + ' ' + interim).trim();
+    const arm = ms => { clearTimeout(timer); timer = setTimeout(finish, ms); };
+    function finish() {
+      if (done) return; done = true; clearTimeout(timer);
+      try { r.stop(); } catch (e) {}
+      $('#micBtn').classList.remove('rec'); rec = null;
+      const text = heard();
+      if (!text) return toast('잘 못 들었어요 🐣 다시 눌러서 말해 주세요');
+      handleVoice(text);
+    }
+    r.finish = finish;
+    r.onstart = () => { $('#micBtn').classList.add('rec'); toast('듣고 있어요 🎤 천천히 말씀하세요 (다 끝나면 마이크를 다시 눌러요)'); };
+    r.onresult = e => {
+      interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalText += ' ' + t; else interim += t;
+      }
+      toast('👂 ' + heard());
+      arm(SILENCE_MS);
     };
-    rec.onerror = e => toast('음성 인식 오류: ' + e.error + (e.error === 'not-allowed' ? ' (마이크 권한을 허용해 주세요)' : ''));
-    rec.onend = () => { $('#micBtn').classList.remove('rec'); rec = null; };
-    rec.start();
+    r.onerror = e => {
+      if (e.error === 'no-speech' || e.error === 'aborted') return;
+      toast('음성 인식 오류: ' + e.error + (e.error === 'not-allowed' ? ' (마이크 권한을 허용해 주세요)' : ''));
+      done = true; clearTimeout(timer); $('#micBtn').classList.remove('rec'); rec = null;
+    };
+    // 브라우저가 중간에 끊어도(침묵 등) 계속 듣기
+    r.onend = () => { if (!done) { try { r.start(); } catch (e) {} } };
+    arm(12000); // 아무 말도 없으면 12초 뒤 종료
+    r.start();
   };
+
+  // 한국 시간 기준 현재 시각
+  function nowKST() { return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' })); }
+
+  // 음성 결과를 확인창 없이 바로 등록 (금액을 못 알아들었을 때만 입력창)
+  function handleVoice(text) {
+    const p = Parser.parseTransaction(text, { cards: S.cards, salary: S.settings.salary, now: nowKST() });
+    if (!p.ok) { toast('금액을 못 알아들었어요: ' + text); return openForm(null, p); }
+    const tx = { id: uid(), type: p.type, amount: p.amount, date: p.date, category: p.category, memo: p.memo, cardId: p.cardId, payment: p.payment };
+    S.txs.push(tx); save();
+    selDay = tx.date; const d = new Date(tx.date); cur = new Date(d.getFullYear(), d.getMonth(), 1);
+    render();
+    const c = cardOf(tx.cardId);
+    const t = $('#toast');
+    t.innerHTML = `✅ ${tx.date.slice(5)} · ${esc(tx.memo)} · ${tx.category} · ${tx.type === 'income' ? '+' : '-'}${won(tx.amount)}${c ? ' · ' + (c.emoji || '💳') + esc(c.nickname || c.name) : ''}<br><small>"${esc(text)}"</small> <button id="undoV" class="chip">되돌리기</button>`;
+    t.classList.remove('hidden'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.add('hidden'), 7000);
+    $('#undoV').onclick = () => { S.txs = S.txs.filter(x => x.id !== tx.id); save(); t.classList.add('hidden'); render(); };
+  }
   $('#addBtn').onclick = () => openForm();
 
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });

@@ -1,4 +1,4 @@
-// 음성/텍스트 문장 → 거래 데이터 파서 (브라우저/Node 공용)
+﻿// 음성/텍스트 문장 → 거래 데이터 파서 (브라우저/Node 공용)
 (function (root) {
   const DIG = { 일: 1, 이: 2, 삼: 3, 사: 4, 오: 5, 육: 6, 칠: 7, 팔: 8, 구: 9 };
   const SUB = { 십: 10, 백: 100, 천: 1000 };
@@ -52,7 +52,7 @@
     if (/그저께|그제/.test(text)) d.setDate(d.getDate() - 2);
     else if (/어제/.test(text)) d.setDate(d.getDate() - 1);
     else if ((m = text.match(/(\d+)\s?일\s?전/))) d.setDate(d.getDate() - +m[1]);
-    else if ((m = text.match(/(\d{1,2})\s?월\s?(\d{1,2})\s?일/))) { d.setMonth(+m[1] - 1); d.setDate(+m[2]); }
+    else if ((m = text.match(/(\d{1,2})\s?월\s?(\d{1,2})\s?일/))) { d.setDate(1); d.setMonth(+m[1] - 1); d.setDate(+m[2]); if (d > new Date(now.getTime() + 864e5 * 31)) d.setFullYear(d.getFullYear() - 1); }
     else if ((m = text.match(/(?<![0-9])(\d{1,2})\s?일(?!\s?전)/))) d.setDate(+m[1]);
     return ymd(d);
   }
@@ -74,13 +74,27 @@
     let work = text.trim();
 
     // 결제수단(카드 별명) 찾기: 긴 별명 우선
+    // 음성인식은 "삼성이로"를 "삼성 2", "삼성 이로", "삼성이로" 등으로 적기 때문에 유연하게 매칭
     let card = null;
     const sorted = [...cards].sort((a, b) => (b.nickname || '').length - (a.nickname || '').length);
+    const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const tryMatch = (key, trailing) => {
+      if (!key) return null;
+      const chars = key.replace(/\s+/g, '').split('').map(escRe).join('\\s?');
+      const re = new RegExp(chars + (trailing || ''), 'i');
+      return re.test(work) ? re : null;
+    };
     for (const c of sorted) {
-      for (const key of [c.nickname, c.name]) {
-        if (key && work.includes(key)) { card = c; work = work.split(key).join(' '); break; }
-      }
-      if (card) break;
+      const nick = (c.nickname || '').replace(/\s+/g, '');
+      const stem = nick.length > 2 ? nick.replace(/이$/, '') : nick;   // 삼성이 → 삼성
+      // 1) 별명 그대로 / 어간 + (이|2|으로|로) 2) 카드 이름
+      let re = tryMatch(nick) || tryMatch(stem, '\\s?(?:이|2|二)(?![가-힣])') || tryMatch(stem, '\\s?(?:이로|으로)') || tryMatch(c.name);
+      if (re) { card = c; work = work.replace(re, ' '); break; }
+    }
+    // 3) 그래도 없으면 카드사 이름(삼성, 롯데…)이 포함된 카드가 하나뿐일 때 선택
+    if (!card) {
+      const hit = cards.filter(c => c.company && work.includes(c.company.replace(/카드|뱅크/g, '')) && c.company.replace(/카드|뱅크/g, '').length >= 2);
+      if (hit.length === 1) { card = hit[0]; work = work.replace(card.company.replace(/카드|뱅크/g, ''), ' '); }
     }
     const cash = !card && /현금/.test(work);
 
@@ -103,7 +117,7 @@
     let memo = work
       .replace(/오늘|어제|그저께|그제|\d+\s?일\s?전|\d{1,2}\s?월\s?\d{1,2}\s?일|\d{1,2}\s?일/g, ' ')
       .replace(/(으로|로)\s/g, ' ')
-      .replace(/샀어요?|썼어요?|샀음|썼음|결제(했어요?|함)?|사용(했어요?)?|입금(됐어요?|되었어요?|됨)?|들어왔어요?|받았어요?|했어요?|했어|현금|나는|나\s|내가/g, ' ')
+      .replace(/샀어요?|삿어요?|샀다|썼어요?|샀음|썼음|결제(했어요?|함)?|사용(했어요?)?|입금(됐어요?|되었어요?|됨)?|들어왔어요?|받았어요?|했어요?|했어|현금|나는|나\s|내가/g, ' ')
       .replace(/에서|에서는|을|를|짜리/g, ' ')
       .replace(/\s+/g, ' ').trim();
     if (type === 'income' && !memo) memo = category;
@@ -121,3 +135,4 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Parser = api;
 })(typeof window !== 'undefined' ? window : globalThis);
+
