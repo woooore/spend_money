@@ -42,7 +42,7 @@
   const prevKey = () => { const d = new Date(cur); d.setMonth(d.getMonth() - 1); return mKey(d); };
   const monthTxs = k => S.txs.filter(t => t.date.startsWith(k));
   const cardOf = id => S.cards.find(c => c.id === id);
-  function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.remove('hidden'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.add('hidden'), 2600); }
+  function toast(msg, ms = 2600) { const t = $('#toast'); t.textContent = msg; t.classList.remove('hidden'); clearTimeout(toast.h); if (ms > 0) toast.h = setTimeout(() => t.classList.add('hidden'), ms); }
 
   // ---------- 카드 혜택 계산 ----------
   function rateOf(card, cat) {
@@ -590,23 +590,31 @@
 출력 JSON 스키마: [{"date":"YYYY-MM-DD","memo":"string","amount":number,"category":"string","installment":number,"interestFree":boolean,"cardId":string|null}]`;
 
     let res, data;
-    const models = ['gemini-3.8-flash', 'gemini-3.0-flash', 'gemini-2.5-flash'];
+    const models = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
     for (const model of models) {
-      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: file.type || 'image/jpeg', data: b64 } }] }],
-          generationConfig: { responseMimeType: 'application/json' }
-        })
-      });
+      toast(`🤖 AI 분석 중... (${model})`, 0);
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 20000);
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+          method: 'POST',
+          signal: ctrl.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: file.type || 'image/jpeg', data: b64 } }] }],
+            generationConfig: { responseMimeType: 'application/json' }
+          })
+        });
+      } finally { clearTimeout(to); }
       if (res.ok) { data = await res.json(); break; }
       const err = await res.json().catch(() => ({}));
       const msg = err.error?.message || `API 오류 (${res.status})`;
-      if (model === models[models.length - 1] || (res.status !== 404 && !/no longer available|not found/i.test(msg))) throw new Error(msg);
+      if (model === models[models.length - 1] || (res.status !== 404 && !/no longer available|not found|not supported/i.test(msg))) throw new Error(msg);
     }
-    const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-    const arr = JSON.parse(raw);
+    let raw = (data.candidates?.[0]?.content?.parts?.[0]?.text || '[]').trim();
+    raw = raw.replace(/^```json\s*|^```\s*|```$/g, '').trim();
+    const parsed = JSON.parse(raw);
+    const arr = Array.isArray(parsed) ? parsed : (parsed.items || parsed.transactions || [parsed]);
     if (!Array.isArray(arr) || !arr.length) throw new Error('내역을 찾지 못했어요');
     const defId = (S.cards.find(c => c.isDefault) || {}).id || null;
     return arr.map(x => {
@@ -653,10 +661,11 @@
   }
   async function scanReceipt(file) {
     let aiErr = '';
-    if (S.settings.geminiKey) {
-      toast('🤖 AI가 영수증을 분석하고 있어요...');
+    const key = S.settings.geminiKey || ($('#sGemini') ? $('#sGemini').value.trim() : '');
+    if (key) {
+      toast('🤖 AI가 영수증을 분석하고 있어요...', 0);
       try {
-        const items = await analyzeWithGemini(file, S.settings.geminiKey);
+        const items = await analyzeWithGemini(file, key);
         if (items.length >= 2) {
           toast(`🤖 AI가 ${items.length}건을 정확히 읽어왔어요 ✨`);
           return openBatchForm(items, '🤖 Gemini AI 분석');
@@ -664,11 +673,11 @@
         toast('🤖 AI가 영수증을 읽어왔어요 ✨');
         return openForm(null, items[0]);
       } catch (err) {
-        aiErr = err.message || String(err);
-        toast('AI 분석 실패 → 기본 OCR로 시도할게요');
+        aiErr = err.name === 'AbortError' ? '응답 시간 초과(20초)' : (err.message || String(err));
+        toast('AI 분석 실패 → 기본 OCR로 시도할게요', 0);
       }
     }
-    toast('🔍 영수증 글자를 읽고 있어요... (첫 실행은 5~10초 걸릴 수 있어요)');
+    toast('🔍 영수증 글자를 읽고 있어요... (첫 실행은 5~10초 걸릴 수 있어요)', 0);
     try {
       const T = await loadTesseract();
       const imgBlob = await preprocessForOcr(file);
