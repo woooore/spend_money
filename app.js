@@ -586,12 +586,57 @@
         defaultCardId: (S.cards.find(c => c.isDefault) || {}).id,
         keywords: S.keywords
       });
-      toast(r.ok ? '영수증을 읽어왔어요! 확인 후 저장해 주세요 ✨' : '금액을 못 찾았어요. 직접 입력해 주세요');
-      openForm(null, r);
+      if (r.batch && r.batch.length) {
+        toast(`📋 내역 ${r.batch.length}건을 읽어왔어요! 확인 후 저장해 주세요`);
+        openBatchForm(r.batch);
+      } else {
+        toast(r.ok ? '영수증을 읽어왔어요! 확인 후 저장해 주세요 ✨' : '금액을 못 찾았어요. 직접 입력해 주세요');
+        openForm(null, r);
+      }
     } catch (err) {
       toast('영수증 분석 오류: ' + (err.message || err));
       openForm();
     }
+  }
+  // 카드 이용내역 캡처 등 다건 일괄 등록 모달
+  function openBatchForm(items) {
+    const defCardId = (items[0] && items[0].cardId) || (S.cards.find(c => c.isDefault) || {}).id || 'none';
+    const cardOpts = `<option value="none">선택 안 함</option><option value="cash">현금</option>` +
+      S.cards.map(c => `<option value="${c.id}" ${defCardId === c.id ? 'selected' : ''}>${c.emoji || '💳'} ${esc(c.nickname || c.name)} (${esc(c.name)})</option>`).join('');
+    const rows = items.map((it, i) => `
+      <div class="box" style="padding:10px;margin-bottom:8px;background:var(--surface2);box-shadow:none">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <input type="checkbox" class="bChk" data-i="${i}" checked style="width:auto">
+          <input type="date" class="bDate" data-i="${i}" value="${it.date}" style="flex:1;padding:6px 8px;font-size:13px">
+          <select class="bCat" data-i="${i}" style="width:110px;padding:6px 8px;font-size:13px">${EXP_CATS.map(c => `<option ${c === it.category ? 'selected' : ''}>${c}</option>`).join('')}</select>
+        </div>
+        <div style="display:flex;gap:8px">
+          <input class="bMemo" data-i="${i}" value="${esc(it.memo)}" placeholder="내용" style="flex:1;padding:6px 8px;font-size:14px">
+          <input type="number" class="bAmt" data-i="${i}" value="${it.amount}" style="width:110px;padding:6px 8px;font-size:14px;text-align:right">
+        </div>
+      </div>`).join('');
+    openModal(`<h3 style="margin-top:0">📋 이용내역 ${items.length}건 한 번에 등록</h3>
+      <label style="margin-top:0">공통 결제수단</label><select id="bPay" style="margin-bottom:10px">${cardOpts}</select>
+      ${rows}
+      <div class="btns"><button class="btn gray" id="bCancel">취소</button><button class="btn" id="bSave">${items.length}건 저장</button></div>`);
+    $('#bCancel').onclick = closeModal;
+    $('#bSave').onclick = () => {
+      const pay = $('#bPay').value;
+      const cardId = cardOf(pay) ? pay : null, payment = cardId ? 'card' : pay;
+      let added = 0, lastDate = selDay;
+      items.forEach((it, i) => {
+        if (!$(`.bChk[data-i="${i}"]`).checked) return;
+        const amt = +$(`.bAmt[data-i="${i}"]`).value; if (!(amt > 0)) return;
+        const date = $(`.bDate[data-i="${i}"]`).value || selDay;
+        const cat = $(`.bCat[data-i="${i}"]`).value;
+        const memo = $(`.bMemo[data-i="${i}"]`).value.trim() || cat;
+        S.txs.push({ id: uid(), type: 'expense', amount: amt, date, category: cat, memo, cardId, payment });
+        added++; lastDate = date;
+      });
+      if (!added) return toast('저장할 내역을 선택해 주세요');
+      save(); selDay = lastDate; const d = new Date(lastDate); cur = new Date(d.getFullYear(), d.getMonth(), 1);
+      closeModal(); render(); toast(`${added}건이 등록됐어요 ✨`);
+    };
   }
   $('#photoBtn').onclick = () => $('#receiptFile').click();
   $('#receiptFile').onchange = e => {

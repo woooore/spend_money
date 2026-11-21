@@ -22,7 +22,7 @@
   const AMOUNT_RE2 = /([0-9][0-9,]*\s?(?:만|천)(?:\s?[0-9,]*\s?천?)?)/;
 
   const CATEGORIES = {
-    식비: ['점심', '저녁', '아침', '밥', '식당', '카페', '커피', '스타벅스', '배달', '치킨', '피자', '맥도날드', '버거', '음식', '배민', '요기요', '편의점', '술', '맥주', '간식', '빵', '마트', '장보기', '식비'],
+    식비: ['점심', '저녁', '아침', '밥', '식당', '카페', '커피', '스타벅스', '배달', '치킨', '피자', '맥도날드', '버거', '음식', '배민', '요기요', '쿠팡이츠', '편의점', 'gs25', '지에스', 'cu', '세븐일레븐', '이마트24', '술', '맥주', '간식', '빵', '마트', '장보기', '식비'],
     교통: ['택시', '버스', '지하철', '기름', '주유', '교통', '카카오택시', '기차', 'ktx', '주차', '톨게이트', '하이패스'],
     쇼핑: ['쿠팡', '충전기', '옷', '신발', '네이버쇼핑', '쇼핑', '가방', '지마켓', '11번가', '올리브영', '무신사', '다이소', '이케아', '컴퓨터', '노트북', '이어폰', '케이스', '가전', '아이폰', '애플', 'apple', '갤럭시', '자급제'],
     생활: ['세제', '휴지', '생필품', '청소', '수리', '가구', '생활'],
@@ -144,18 +144,115 @@
     };
   }
 
-  // 영수증 OCR 텍스트 → 거래 데이터 파서
+  // 카드 매칭 공통 헬퍼
+  function matchCardFromText(full, cards, defaultCardId) {
+    const ALIASES = [['국민', 'KB'], ['삼성', '삼성카드'], ['신한', '신한카드'], ['현대', '현대카드'], ['롯데', '롯데카드'], ['우리', '우리카드'], ['하나', '하나카드'], ['농협', 'NH'], ['비씨', 'BC'], ['토스', '토스뱅크'], ['카카오', '카카오뱅크']];
+    for (const c of cards) {
+      const keys = [c.name, c.nickname, c.company].filter(Boolean);
+      if (keys.some(k => k.length >= 2 && full.toLowerCase().includes(k.replace(/카드|뱅크/g, '').toLowerCase()))) return c;
+      for (const grp of ALIASES) {
+        if (grp.some(a => (c.company || c.name || '').toUpperCase().includes(a.toUpperCase())) && grp.some(a => full.toUpperCase().includes(a.toUpperCase()))) return c;
+      }
+    }
+    return defaultCardId ? (cards.find(c => c.id === defaultCardId) || null) : null;
+  }
+
+  function catFromText(text, keywords) {
+    for (const [cat, words] of Object.entries(keywords || {})) {
+      if ((words || []).some(w => w && text.includes(w))) return cat;
+    }
+    return matchCategory(text, CATEGORIES, '기타지출');
+  }
+
+  // 카드사 앱 이용내역 목록 캡처 → 다건 파싱 (예: "26.11.21 17:26 | 일시불" 형태가 2건 이상일 때)
+  function parseReceiptList(text, ctx) {
+    ctx = ctx || {};
+    const cards = ctx.cards || [];
+    const lines = String(text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    const full = lines.join('\n');
+    const card = matchCardFromText(full, cards, ctx.defaultCardId);
+
+    // 날짜 줄 인덱스 찾기 (YY.MM.DD 또는 YYYY.MM.DD, 선택적 HH:MM)
+    const dateLineRe = /(?:^|\s)((?:20)?\d{2})[./-](\d{1,2})[./-](\d{1,2})(?:\s+\d{1,2}:\d{2})?/;
+    const dateHits = [];
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(dateLineRe);
+      if (m) {
+        const y = m[1].length === 2 ? '20' + m[1] : m[1];
+        const mm = +m[2], dd = +m[3];
+        if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+          dateHits.push({ idx: i, date: `${y}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}` });
+        }
+      }
+    }
+    if (dateHits.length < 2) return null;
+
+    const ignoreRe = /^(?:\d{1,2}월\s*\d{1,2}일|포인트\s*적립|\+?\d+P$)/;
+    const amtRe = /([1-9][0-9,]{1,})\s*원/;
+    const items = [];
+
+    for (let k = 0; k < dateHits.length; k++) {
+      const cur = dateHits[k];
+      // 이전 날짜줄 다음(단, 포인트/구분선 제외) ~ 현재 날짜줄까지가 한 블록
+      const prevEnd = k === 0 ? 0 : dateHits[k - 1].idx + 1;
+      let start = prevEnd;
+      while (start < cur.idx && ignoreRe.test(lines[start])) start++;
+      // 혹시 이전 거래의 포인트 줄이 있다면 건너뜀
+      const chunk = lines.slice(start, cur.idx + 1).filter(l => !ignoreRe.test(l));
+      const chunkText = chunk.join(' ');
+
+      // 금액 찾기 (현재 블록에서 가장 먼저/큰 원 단위 금액)
+      let amount = 0;
+      for (const l of chunk) {
+        const am = l.match(amtRe);
+        if (am) { amount = parseInt(am[1].replace(/,/g, ''), 10) || 0; break; }
+      }
+      if (!amount) continue;
+
+      // 할부 개월
+      let installment = 1;
+      const im = chunkText.match(/(\d{1,2})\s*(?:개월|months?)/i);
+      if (im && +im[1] >= 2 && +im[1] <= 60) installment = +im[1];
+
+      // 가맹점명(메모): 날짜·시간·일시불·금액·특수기호 제거
+      const memoLines = chunk.map(l => l
+        .replace(dateLineRe, ' ')
+        .replace(amtRe, ' ')
+        .replace(/일시불|할부|\d{1,2}\s*개월|\|/g, ' ')
+        .replace(/\s+/g, ' ').trim()
+      ).filter(Boolean);
+      const memo = (memoLines[0] || memoLines.join(' ') || '카드결제').slice(0, 45);
+      const category = catFromText(memo + ' ' + chunkText, ctx.keywords);
+
+      items.push({
+        type: 'expense', amount, date: cur.date, category, memo,
+        installment, interestFree: true,
+        cardId: card ? card.id : null,
+        payment: card ? 'card' : 'none',
+        ok: true
+      });
+    }
+    return items.length >= 2 ? items : null;
+  }
+
+  // 영수증 OCR 텍스트 → 거래 데이터 파서 (단건 또는 다건 { batch: [...] })
   function parseReceipt(text, ctx) {
     ctx = ctx || {};
+    const list = parseReceiptList(text, ctx);
+    if (list) return { batch: list, ok: true };
+
     const cards = ctx.cards || [];
     const now = ctx.now || new Date();
     const lines = String(text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     const full = lines.join('\n');
 
-    // 1. 날짜 (YYYY/MM/DD, YYYY-MM-DD, YYYY.MM.DD)
+    // 1. 날짜 (YYYY/MM/DD 또는 YY.MM.DD)
     let date = ymd(now);
-    const dm = full.match(/(20\d{2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,2})/);
-    if (dm) date = `${dm[1]}-${dm[2].padStart(2, '0')}-${dm[3].padStart(2, '0')}`;
+    const dm = full.match(/((?:20)?\d{2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,2})/);
+    if (dm) {
+      const y = dm[1].length === 2 ? '20' + dm[1] : dm[1];
+      date = `${y}-${dm[2].padStart(2, '0')}-${dm[3].padStart(2, '0')}`;
+    }
 
     // 2. 할부개월
     let installment = 1;
@@ -174,19 +271,7 @@
     }
 
     // 4. 카드 매칭
-    let card = null;
-    const ALIASES = [['국민', 'KB'], ['삼성', '삼성카드'], ['신한', '신한카드'], ['현대', '현대카드'], ['롯데', '롯데카드'], ['우리', '우리카드'], ['하나', '하나카드'], ['농협', 'NH'], ['비씨', 'BC'], ['토스', '토스뱅크'], ['카카오', '카카오뱅크']];
-    for (const c of cards) {
-      const keys = [c.name, c.nickname, c.company].filter(Boolean);
-      if (keys.some(k => k.length >= 2 && full.toLowerCase().includes(k.replace(/카드|뱅크/g, '').toLowerCase()))) { card = c; break; }
-      for (const grp of ALIASES) {
-        if (grp.some(a => (c.company || c.name || '').toUpperCase().includes(a.toUpperCase())) && grp.some(a => full.toUpperCase().includes(a.toUpperCase()))) {
-          card = c; break;
-        }
-      }
-      if (card) break;
-    }
-    if (!card && ctx.defaultCardId) card = cards.find(c => c.id === ctx.defaultCardId) || null;
+    const card = matchCardFromText(full, cards, ctx.defaultCardId);
 
     // 5. 상품명 / 상호 추출 (다음 라벨 전까지)
     const grab = (labelRe, stopRe) => {
@@ -194,7 +279,6 @@
         if (labelRe.test(lines[i])) {
           let val = lines[i].replace(labelRe, '').trim();
           if (i + 1 < lines.length && !stopRe.test(lines[i + 1]) && val.length < 40) {
-            // 다음 줄이 이어지는 상품명일 수 있음 (숫자+원이나 라벨이 아닐 때)
             if (!/[0-9,]+\s*원$/.test(lines[i + 1])) val = (val + ' ' + lines[i + 1]).trim();
           }
           if (val) return val;
@@ -209,11 +293,7 @@
     if (memo.length > 45) memo = memo.slice(0, 45);
 
     // 6. 카테고리
-    let category = null;
-    for (const [cat, words] of Object.entries(ctx.keywords || {})) {
-      if ((words || []).some(w => w && full.includes(w))) { category = cat; break; }
-    }
-    if (!category) category = matchCategory(full + ' ' + memo, CATEGORIES, '기타지출');
+    const category = catFromText(full + ' ' + memo, ctx.keywords);
 
     return {
       type: 'expense', amount, date, category, memo,
@@ -224,7 +304,7 @@
     };
   }
 
-  const api = { parseTransaction, parseReceipt, koreanToNumber, CATEGORIES, INCOME_CATEGORIES, ymd };
+  const api = { parseTransaction, parseReceipt, parseReceiptList, koreanToNumber, CATEGORIES, INCOME_CATEGORIES, ymd };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Parser = api;
 })(typeof window !== 'undefined' ? window : globalThis);
