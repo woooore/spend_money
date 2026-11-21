@@ -630,25 +630,46 @@
       document.head.appendChild(s);
     });
   }
+  // 기본 OCR 인식률 개선용 2배 확대 전처리
+  function preprocessForOcr(file) {
+    return new Promise(res => {
+      const img = new Image(), url = URL.createObjectURL(file);
+      img.onload = () => {
+        const scale = img.width < 1200 ? 2 : 1;
+        const cv = document.createElement('canvas');
+        cv.width = img.width * scale; cv.height = img.height * scale;
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+        ctx.drawImage(img, 0, 0, cv.width, cv.height);
+        URL.revokeObjectURL(url);
+        cv.toBlob(b => res(b || file), 'image/png');
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); res(file); };
+      img.src = url;
+    });
+  }
   async function scanReceipt(file) {
+    let aiErr = '';
     if (S.settings.geminiKey) {
       toast('🤖 AI가 영수증을 분석하고 있어요...');
       try {
         const items = await analyzeWithGemini(file, S.settings.geminiKey);
         if (items.length >= 2) {
           toast(`🤖 AI가 ${items.length}건을 정확히 읽어왔어요 ✨`);
-          return openBatchForm(items);
+          return openBatchForm(items, '🤖 Gemini AI 분석');
         }
         toast('🤖 AI가 영수증을 읽어왔어요 ✨');
         return openForm(null, items[0]);
       } catch (err) {
-        toast('AI 분석 실패(' + (err.message || err) + ') → 기본 OCR로 시도할게요');
+        aiErr = err.message || String(err);
+        toast('AI 분석 실패 → 기본 OCR로 시도할게요');
       }
     }
     toast('🔍 영수증 글자를 읽고 있어요... (첫 실행은 5~10초 걸릴 수 있어요)');
     try {
       const T = await loadTesseract();
-      const { data: { text } } = await T.recognize(file, 'kor+eng', {
+      const imgBlob = await preprocessForOcr(file);
+      const { data: { text } } = await T.recognize(imgBlob, 'kor+eng', {
         logger: m => { if (m.status === 'recognizing text') toast(`🔍 영수증 분석 중... ${Math.round((m.progress || 0) * 100)}%`); }
       });
       const r = Parser.parseReceipt(text, {
@@ -656,9 +677,12 @@
         defaultCardId: (S.cards.find(c => c.isDefault) || {}).id,
         keywords: S.keywords
       });
+      const note = aiErr
+        ? `⚠️ AI 실패(${aiErr}) → 기본 OCR로 읽었어요`
+        : '🔍 기본 OCR 결과예요 · ⚙️ 설정에 무료 Gemini API 키를 넣으면 훨씬 정확해져요';
       if (r.batch && r.batch.length) {
         toast(`📋 내역 ${r.batch.length}건을 읽어왔어요! 확인 후 저장해 주세요`);
-        openBatchForm(r.batch);
+        openBatchForm(r.batch, note);
       } else {
         toast(r.ok ? '영수증을 읽어왔어요! 확인 후 저장해 주세요 ✨' : '금액을 못 찾았어요. 직접 입력해 주세요');
         openForm(null, r);
@@ -669,7 +693,7 @@
     }
   }
   // 카드 이용내역 캡처 등 다건 일괄 등록 모달
-  function openBatchForm(items) {
+  function openBatchForm(items, sourceNote) {
     const defCardId = (items[0] && items[0].cardId) || (S.cards.find(c => c.isDefault) || {}).id || 'none';
     const cardOpts = `<option value="none">선택 안 함</option><option value="cash">현금</option>` +
       S.cards.map(c => `<option value="${c.id}" ${defCardId === c.id ? 'selected' : ''}>${c.emoji || '💳'} ${esc(c.nickname || c.name)} (${esc(c.name)})</option>`).join('');
@@ -686,6 +710,7 @@
         </div>
       </div>`).join('');
     openModal(`<h3 style="margin-top:0">📋 이용내역 ${items.length}건 한 번에 등록</h3>
+      ${sourceNote ? `<div class="note" style="margin:0 0 10px">${esc(sourceNote)}</div>` : ''}
       <label style="margin-top:0">공통 결제수단</label><select id="bPay" style="margin-bottom:10px">${cardOpts}</select>
       ${rows}
       <div class="btns"><button class="btn gray" id="bCancel">취소</button><button class="btn" id="bSave">${items.length}건 저장</button></div>`);

@@ -216,6 +216,7 @@
         .replace(amtRe, ' ')
         .replace(/일시불|할부|\d{1,2}\s*개월|\|/g, ' ')
         .replace(/^[\s>"'=*\-·•ㅁ□■○●]+|[\s>"'=*\-·•ㅁ□■○●]+$/g, '')
+        .replace(/^[A-Za-z]{1,2}\s+(?=[가-힣])/, '')
         .replace(/\s+/g, ' ').trim()
       ).filter(Boolean);
       const memo = (memoLines[0] || memoLines.join(' ') || '카드결제').slice(0, 45);
