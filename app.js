@@ -589,19 +589,22 @@
 - cardId는 다음 등록 카드 중 일치하는 id 또는 null: [${cardDesc || '없음'}]
 출력 JSON 스키마: [{"date":"YYYY-MM-DD","memo":"string","amount":number,"category":"string","installment":number,"interestFree":boolean,"cardId":string|null}]`;
 
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: file.type || 'image/jpeg', data: b64 } }] }],
-        generationConfig: { responseMimeType: 'application/json' }
-      })
-    });
-    if (!res.ok) {
+    let res, data;
+    const models = ['gemini-3.8-flash', 'gemini-3.0-flash', 'gemini-2.5-flash'];
+    for (const model of models) {
+      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: file.type || 'image/jpeg', data: b64 } }] }],
+          generationConfig: { responseMimeType: 'application/json' }
+        })
+      });
+      if (res.ok) { data = await res.json(); break; }
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `API 오류 (${res.status})`);
+      const msg = err.error?.message || `API 오류 (${res.status})`;
+      if (model === models[models.length - 1] || (res.status !== 404 && !/no longer available|not found/i.test(msg))) throw new Error(msg);
     }
-    const data = await res.json();
     const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr) || !arr.length) throw new Error('내역을 찾지 못했어요');
