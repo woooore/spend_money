@@ -290,6 +290,8 @@
     <div class="box"><h3>기본 정보</h3>
       <label>월급 (음성으로 "월급 들어왔어" 라고 하면 자동 입력돼요)</label><input id="sSalary" type="number" value="${S.settings.salary || ''}">
       <label>월 예산</label><input id="sBudget" type="number" value="${S.settings.budget || ''}">
+      <label>🤖 AI 영수증 분석 키 (Gemini API Key · 선택)</label><input id="sGemini" type="password" value="${esc(S.settings.geminiKey || '')}" placeholder="AIza... (입력하면 AI가 영수증/내역 캡처를 정확히 분석해요)">
+      <p class="muted" style="margin:6px 0 0"><a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent)">Google AI Studio에서 무료 API 키 발급</a> · 키는 내 폰/브라우저에만 저장돼요</p>
       <div class="btns"><button class="btn" id="sSave">저장</button></div></div>
     <div class="box"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3 style="margin:0">카테고리 · 자동 분류 단어</h3><button class="chip" id="addCat">+ 새 카테고리</button></div>
       <p class="muted" style="margin:0 0 8px">카테고리를 눌러 단어를 등록하세요. 예: 교회·헌금·십일조 → ⛪ 헌금</p>
@@ -303,7 +305,7 @@
     $('#addCat').onclick = () => openCatForm();
     el.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => openCatForm(b.dataset.cat));
     $('#themeSeg').onclick = e => { const b = e.target.closest('[data-th]'); if (!b) return; S.settings.theme = b.dataset.th; applyTheme(); save(); renderSettings(); };
-    $('#sSave').onclick = () => { S.settings.salary = +$('#sSalary').value || 0; S.settings.budget = +$('#sBudget').value || 0; save(); toast('저장됐어요'); render(); };
+    $('#sSave').onclick = () => { S.settings.salary = +$('#sSalary').value || 0; S.settings.budget = +$('#sBudget').value || 0; S.settings.geminiKey = $('#sGemini').value.trim(); save(); toast('저장됐어요'); render(); };
     $('#exJson').onclick = () => download('가계부백업.json', JSON.stringify(S, null, 2), 'application/json');
     $('#exCsv').onclick = () => download('가계부.csv', '\ufeff날짜,구분,카테고리,금액,결제수단,메모\n' + S.txs.map(t => [t.date, t.type === 'income' ? '수입' : '지출', t.category, t.amount, cardOf(t.cardId)?.name || (t.payment === 'cash' ? '현금' : ''), '"' + (t.memo || '').replace(/"/g, '""') + '"'].join(',')).join('\n'), 'text/csv');
     $('#imJson').onclick = () => $('#file').click();
@@ -563,7 +565,61 @@
   }
   $('#addBtn').onclick = () => openForm();
 
-  // ---------- 영수증 사진 분석 (브라우저 OCR) ----------
+  // ---------- 영수증 사진 분석 (AI 또는 브라우저 OCR) ----------
+  function fileToBase64(file) {
+    return new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result.split(',')[1]);
+      fr.onerror = rej;
+      fr.readAsDataURL(file);
+    });
+  }
+  async function analyzeWithGemini(file, apiKey) {
+    const b64 = await fileToBase64(file);
+    const today = Parser.ymd(nowKST());
+    const cardDesc = S.cards.map(c => `${c.id}:${c.company || ''}/${c.name}/${c.nickname || ''}`).join(', ');
+    const kwDesc = Object.entries(S.keywords || {}).map(([k, v]) => `${k}:[${v.join(',')}]`).join(', ');
+    const prompt = `이미지는 카드 영수증 또는 카드사 앱 이용내역 목록이다. 모든 결제 건을 JSON 배열로 추출하라.
+규칙:
+- 오늘 날짜는 ${today}. 날짜 형식은 YYYY-MM-DD (예: 26.11.21 -> 2026-11-21).
+- memo는 가맹점명 또는 상품명만 깔끔히 적고 아이콘·포인트 적립·날짜구분선('11월 20일 금요일')은 제외.
+- amount는 정수(원). 포인트(+39P)는 제외.
+- installment는 할부 개월수(일시불이면 1). interestFree는 무이자면 true, 유이자면 false.
+- category는 반드시 다음 중 하나: ${EXP_CATS.join(', ')}${kwDesc ? `. 사용자 키워드 우선: ${kwDesc}` : ''}
+- cardId는 다음 등록 카드 중 일치하는 id 또는 null: [${cardDesc || '없음'}]
+출력 JSON 스키마: [{"date":"YYYY-MM-DD","memo":"string","amount":number,"category":"string","installment":number,"interestFree":boolean,"cardId":string|null}]`;
+
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: file.type || 'image/jpeg', data: b64 } }] }],
+        generationConfig: { responseMimeType: 'application/json' }
+      })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || `API 오류 (${res.status})`);
+    }
+    const data = await res.json();
+    const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr) || !arr.length) throw new Error('내역을 찾지 못했어요');
+    const defId = (S.cards.find(c => c.isDefault) || {}).id || null;
+    return arr.map(x => {
+      const cid = (x.cardId && cardOf(x.cardId)) ? x.cardId : defId;
+      return {
+        type: 'expense',
+        amount: Math.round(+x.amount) || 0,
+        date: /^\d{4}-\d{2}-\d{2}$/.test(x.date) ? x.date : today,
+        category: EXP_CATS.includes(x.category) ? x.category : '기타지출',
+        memo: String(x.memo || '카드결제').slice(0, 45),
+        installment: Math.max(1, +x.installment || 1),
+        interestFree: x.interestFree !== false,
+        cardId: cid, payment: cid ? 'card' : 'none', ok: (+x.amount || 0) > 0
+      };
+    });
+  }
   function loadTesseract() {
     if (window.Tesseract) return Promise.resolve(window.Tesseract);
     return new Promise((res, rej) => {
@@ -575,6 +631,20 @@
     });
   }
   async function scanReceipt(file) {
+    if (S.settings.geminiKey) {
+      toast('🤖 AI가 영수증을 분석하고 있어요...');
+      try {
+        const items = await analyzeWithGemini(file, S.settings.geminiKey);
+        if (items.length >= 2) {
+          toast(`🤖 AI가 ${items.length}건을 정확히 읽어왔어요 ✨`);
+          return openBatchForm(items);
+        }
+        toast('🤖 AI가 영수증을 읽어왔어요 ✨');
+        return openForm(null, items[0]);
+      } catch (err) {
+        toast('AI 분석 실패(' + (err.message || err) + ') → 기본 OCR로 시도할게요');
+      }
+    }
     toast('🔍 영수증 글자를 읽고 있어요... (첫 실행은 5~10초 걸릴 수 있어요)');
     try {
       const T = await loadTesseract();

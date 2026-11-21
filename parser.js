@@ -187,21 +187,18 @@
     }
     if (dateHits.length < 2) return null;
 
-    const ignoreRe = /^(?:\d{1,2}월\s*\d{1,2}일|포인트\s*적립|\+?\d+P$)/;
+    const ignoreRe = /^(?:\d{1,2}월\s*\d{1,2}[일d]\s*(?:[월화수목금토일]요일)?|포인트\s*적립|\+?\d+P$)/i;
     const amtRe = /([1-9][0-9,]{1,})\s*원/;
     const items = [];
 
     for (let k = 0; k < dateHits.length; k++) {
       const cur = dateHits[k];
-      // 이전 날짜줄 다음(단, 포인트/구분선 제외) ~ 현재 날짜줄까지가 한 블록
       const prevEnd = k === 0 ? 0 : dateHits[k - 1].idx + 1;
       let start = prevEnd;
       while (start < cur.idx && ignoreRe.test(lines[start])) start++;
-      // 혹시 이전 거래의 포인트 줄이 있다면 건너뜀
       const chunk = lines.slice(start, cur.idx + 1).filter(l => !ignoreRe.test(l));
       const chunkText = chunk.join(' ');
 
-      // 금액 찾기 (현재 블록에서 가장 먼저/큰 원 단위 금액)
       let amount = 0;
       for (const l of chunk) {
         const am = l.match(amtRe);
@@ -209,16 +206,16 @@
       }
       if (!amount) continue;
 
-      // 할부 개월
       let installment = 1;
       const im = chunkText.match(/(\d{1,2})\s*(?:개월|months?)/i);
       if (im && +im[1] >= 2 && +im[1] <= 60) installment = +im[1];
 
-      // 가맹점명(메모): 날짜·시간·일시불·금액·특수기호 제거
+      // 가맹점명(메모): 날짜·시간·일시불·금액·아이콘 오인식 기호 제거
       const memoLines = chunk.map(l => l
         .replace(dateLineRe, ' ')
         .replace(amtRe, ' ')
         .replace(/일시불|할부|\d{1,2}\s*개월|\|/g, ' ')
+        .replace(/^[\s>"'=*\-·•ㅁ□■○●]+|[\s>"'=*\-·•ㅁ□■○●]+$/g, '')
         .replace(/\s+/g, ' ').trim()
       ).filter(Boolean);
       const memo = (memoLines[0] || memoLines.join(' ') || '카드결제').slice(0, 45);
