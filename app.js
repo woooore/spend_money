@@ -589,12 +589,12 @@
 - cardId는 다음 등록 카드 중 일치하는 id 또는 null: [${cardDesc || '없음'}]
 출력 JSON 스키마: [{"date":"YYYY-MM-DD","memo":"string","amount":number,"category":"string","installment":number,"interestFree":boolean,"cardId":string|null}]`;
 
-    let res, data;
-    const models = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+    let res, data, lastErr = '';
+    const models = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.0-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash'];
     for (const model of models) {
       toast(`🤖 AI 분석 중... (${model})`, 0);
       const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), 20000);
+      const to = setTimeout(() => ctrl.abort(), 18000);
       try {
         res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
           method: 'POST',
@@ -605,12 +605,16 @@
             generationConfig: { responseMimeType: 'application/json' }
           })
         });
+        if (res.ok) { data = await res.json(); break; }
+        const err = await res.json().catch(() => ({}));
+        lastErr = err.error?.message || `API 오류 (${res.status})`;
+        if (res.status === 400 || res.status === 401 || res.status === 403 || /API key not valid/i.test(lastErr)) throw new Error(lastErr);
+      } catch (e) {
+        if (/API key not valid/i.test(e.message || '')) throw e;
+        lastErr = e.name === 'AbortError' ? '응답 시간 초과' : (e.message || String(e));
       } finally { clearTimeout(to); }
-      if (res.ok) { data = await res.json(); break; }
-      const err = await res.json().catch(() => ({}));
-      const msg = err.error?.message || `API 오류 (${res.status})`;
-      if (model === models[models.length - 1] || (res.status !== 404 && !/no longer available|not found|not supported/i.test(msg))) throw new Error(msg);
     }
+    if (!data) throw new Error(lastErr || '모든 모델 응답 실패');
     let raw = (data.candidates?.[0]?.content?.parts?.[0]?.text || '[]').trim();
     raw = raw.replace(/^```json\s*|^```\s*|```$/g, '').trim();
     const parsed = JSON.parse(raw);
