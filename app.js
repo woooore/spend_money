@@ -590,7 +590,9 @@
 출력 JSON 스키마: [{"date":"YYYY-MM-DD","memo":"string","amount":number,"category":"string","installment":number,"interestFree":boolean,"cardId":string|null}]`;
 
     let res, data, lastErr = '';
-    const models = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.0-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+    const baseModels = ['gemini-2.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+    const savedM = S.settings.geminiModel;
+    const models = savedM ? [savedM, ...baseModels.filter(m => m !== savedM)] : baseModels;
     for (const model of models) {
       toast(`🤖 AI 분석 중... (${model})`, 0);
       const ctrl = new AbortController();
@@ -605,7 +607,11 @@
             generationConfig: { responseMimeType: 'application/json' }
           })
         });
-        if (res.ok) { data = await res.json(); break; }
+        if (res.ok) {
+          data = await res.json();
+          if (S.settings.geminiModel !== model) { S.settings.geminiModel = model; save(); }
+          break;
+        }
         const err = await res.json().catch(() => ({}));
         lastErr = err.error?.message || `API 오류 (${res.status})`;
         if (res.status === 400 || res.status === 401 || res.status === 403 || /API key not valid/i.test(lastErr)) throw new Error(lastErr);
