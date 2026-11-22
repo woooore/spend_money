@@ -1,6 +1,9 @@
 (() => {
   const $ = (s, r = document) => r.querySelector(s);
   const KEY = 'howSpendMoney.v1';
+  const AUTH_KEY = 'howSpendMoney.auth.v1';
+  // Cloudflare Workers 배포 후 받은 주소를 여기에 넣으면 사용자에게 입력받지 않고 바로 연결됩니다
+  const DEFAULT_SERVER_URL = '';
   const BUILTIN_EXP = Object.keys(Parser.CATEGORIES);
   const BUILTIN_INC = Object.keys(Parser.INCOME_CATEGORIES);
   const EXP_CATS = [...BUILTIN_EXP], INC_CATS = [...BUILTIN_INC];
@@ -36,7 +39,29 @@
   }
   applyTheme();
   S.customCats ||= []; S.keywords ||= {};
-  const save = () => localStorage.setItem(KEY, JSON.stringify(S));
+  let AUTH = loadAuth();
+  function loadAuth() {
+    try { return JSON.parse(localStorage.getItem(AUTH_KEY)) || {}; } catch (e) { return {}; }
+  }
+  const saveAuth = () => localStorage.setItem(AUTH_KEY, JSON.stringify(AUTH));
+  const getServerUrl = () => (AUTH.serverUrl || DEFAULT_SERVER_URL || '').replace(/\/+$/, '');
+  async function apiFetch(path, opts = {}) {
+    const base = getServerUrl();
+    if (!base) throw new Error('서버 주소가 설정되지 않았어요');
+    const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+    if (AUTH.token) headers.Authorization = 'Bearer ' + AUTH.token;
+    const res = await fetch(base + path, Object.assign({}, opts, { headers }));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `서버 오류 (${res.status})`);
+    return data;
+  }
+  let syncTimer = null;
+  function scheduleSync() {
+    if (!AUTH.token || !getServerUrl()) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => apiFetch('/api/data', { method: 'PUT', body: JSON.stringify({ data: S }) }).catch(() => {}), 500);
+  }
+  const save = () => { localStorage.setItem(KEY, JSON.stringify(S)); scheduleSync(); };
   const mKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
   const curKey = () => mKey(cur);
   const prevKey = () => { const d = new Date(cur); d.setMonth(d.getMonth() - 1); return mKey(d); };
@@ -77,6 +102,11 @@
   // ---------- 렌더 ----------
   function render() {
     S.customCats ||= []; S.keywords ||= {}; refreshCats();
+    const ab = $('#authBtn');
+    if (ab) {
+      ab.textContent = AUTH.user ? '👤 ' + AUTH.user.username : '로그인';
+      ab.classList.toggle('on', !!AUTH.user);
+    }
     $('#monthTitle').textContent = cur.getFullYear() + '년 ' + (cur.getMonth() + 1) + '월';
     const txs = monthTxs(curKey());
     const inc = txs.filter(t => t.type === 'income').reduce((a, t) => a + t.amount, 0);
@@ -282,7 +312,11 @@
 
   function renderSettings() {
     const el = $('#tab-settings');
-    el.innerHTML = `<div class="box"><h3>화면 모드</h3><div class="seg" id="themeSeg">
+    const srv = getServerUrl();
+    el.innerHTML = `<div class="box"><h3>👤 계정 · 서버 동기화</h3>
+      <p class="muted" style="margin:0 0 8px">${AUTH.user ? `<b>${esc(AUTH.user.username)}</b>님으로 로그인 중 (자동 동기화)` : '로그인하면 휴대폰·PC 어디서나 내역이 동기화되고, API 키 없이 AI 영수증 인식을 쓸 수 있어요.'}</p>
+      <div class="btns" style="margin-top:8px"><button class="btn" id="openAuth">${AUTH.user ? '계정 관리 / 동기화' : '로그인 · 회원가입'}</button></div></div>
+    <div class="box"><h3>화면 모드</h3><div class="seg" id="themeSeg">
       <button data-th="auto" class="${!S.settings.theme || S.settings.theme === 'auto' ? 'on i' : ''}">자동</button>
       <button data-th="light" class="${S.settings.theme === 'light' ? 'on i' : ''}">라이트</button>
       <button data-th="dark" class="${S.settings.theme === 'dark' ? 'on i' : ''}">다크</button></div>
@@ -302,6 +336,7 @@
       <div class="btns"><button class="btn red" id="reset">전체 삭제</button></div>
       <input type="file" id="file" accept=".json" style="display:none"></div>
     <div class="box"><h3>🎤 음성 입력 예시</h3><p class="muted">"쿠팡에서 오늘 삼성이로 삼만원짜리 충전기 샀어"<br>"어제 롯데로 점심 만이천원"<br>"월급 들어왔어" (설정한 월급 자동 입력)<br>"용돈 오만원 받았어"<br>카드 별명은 [카드혜택] 탭에서 등록하세요.</p></div>`;
+    $('#openAuth').onclick = openAuthModal;
     $('#addCat').onclick = () => openCatForm();
     el.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => openCatForm(b.dataset.cat));
     $('#themeSeg').onclick = e => { const b = e.target.closest('[data-th]'); if (!b) return; S.settings.theme = b.dataset.th; applyTheme(); save(); renderSettings(); };
@@ -574,12 +609,10 @@
       fr.readAsDataURL(file);
     });
   }
-  async function analyzeWithGemini(file, apiKey) {
-    const b64 = await fileToBase64(file);
-    const today = Parser.ymd(nowKST());
+  function buildReceiptPrompt(today) {
     const cardDesc = S.cards.map(c => `${c.id}:${c.company || ''}/${c.name}/${c.nickname || ''}`).join(', ');
     const kwDesc = Object.entries(S.keywords || {}).map(([k, v]) => `${k}:[${v.join(',')}]`).join(', ');
-    const prompt = `이미지는 카드 영수증 또는 카드사 앱 이용내역 목록이다. 모든 결제 건을 JSON 배열로 추출하라.
+    return `이미지는 카드 영수증 또는 카드사 앱 이용내역 목록이다. 모든 결제 건을 JSON 배열로 추출하라.
 규칙:
 - 오늘 날짜는 ${today}. 날짜 형식은 YYYY-MM-DD (예: 26.11.21 -> 2026-11-21).
 - memo는 가맹점명 또는 상품명만 깔끔히 적고 아이콘·포인트 적립·날짜구분선('11월 20일 금요일')은 제외.
@@ -588,6 +621,38 @@
 - category는 반드시 다음 중 하나: ${EXP_CATS.join(', ')}${kwDesc ? `. 사용자 키워드 우선: ${kwDesc}` : ''}
 - cardId는 다음 등록 카드 중 일치하는 id 또는 null: [${cardDesc || '없음'}]
 출력 JSON 스키마: [{"date":"YYYY-MM-DD","memo":"string","amount":number,"category":"string","installment":number,"interestFree":boolean,"cardId":string|null}]`;
+  }
+  function normalizeAiItems(parsed, today) {
+    const arr = Array.isArray(parsed) ? parsed : (parsed.items || parsed.transactions || [parsed]);
+    if (!Array.isArray(arr) || !arr.length) throw new Error('내역을 찾지 못했어요');
+    const defId = (S.cards.find(c => c.isDefault) || {}).id || null;
+    return arr.map(x => {
+      const cid = (x.cardId && cardOf(x.cardId)) ? x.cardId : defId;
+      return {
+        type: 'expense',
+        amount: Math.round(+x.amount) || 0,
+        date: /^\d{4}-\d{2}-\d{2}$/.test(x.date) ? x.date : today,
+        category: EXP_CATS.includes(x.category) ? x.category : '기타지출',
+        memo: String(x.memo || '카드결제').slice(0, 45),
+        installment: Math.max(1, +x.installment || 1),
+        interestFree: x.interestFree !== false,
+        cardId: cid, payment: cid ? 'card' : 'none', ok: (+x.amount || 0) > 0
+      };
+    });
+  }
+  async function analyzeWithServer(file) {
+    const b64 = await fileToBase64(file);
+    const today = Parser.ymd(nowKST());
+    const d = await apiFetch('/api/receipt', {
+      method: 'POST',
+      body: JSON.stringify({ imageBase64: b64, mimeType: file.type || 'image/jpeg', prompt: buildReceiptPrompt(today) })
+    });
+    return normalizeAiItems(d.items, today);
+  }
+  async function analyzeWithGemini(file, apiKey) {
+    const b64 = await fileToBase64(file);
+    const today = Parser.ymd(nowKST());
+    const prompt = buildReceiptPrompt(today);
 
     let res, data, lastErr = '';
     const baseModels = ['gemini-2.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
@@ -624,22 +689,7 @@
     let raw = (data.candidates?.[0]?.content?.parts?.[0]?.text || '[]').trim();
     raw = raw.replace(/^```json\s*|^```\s*|```$/g, '').trim();
     const parsed = JSON.parse(raw);
-    const arr = Array.isArray(parsed) ? parsed : (parsed.items || parsed.transactions || [parsed]);
-    if (!Array.isArray(arr) || !arr.length) throw new Error('내역을 찾지 못했어요');
-    const defId = (S.cards.find(c => c.isDefault) || {}).id || null;
-    return arr.map(x => {
-      const cid = (x.cardId && cardOf(x.cardId)) ? x.cardId : defId;
-      return {
-        type: 'expense',
-        amount: Math.round(+x.amount) || 0,
-        date: /^\d{4}-\d{2}-\d{2}$/.test(x.date) ? x.date : today,
-        category: EXP_CATS.includes(x.category) ? x.category : '기타지출',
-        memo: String(x.memo || '카드결제').slice(0, 45),
-        installment: Math.max(1, +x.installment || 1),
-        interestFree: x.interestFree !== false,
-        cardId: cid, payment: cid ? 'card' : 'none', ok: (+x.amount || 0) > 0
-      };
-    });
+    return normalizeAiItems(parsed, today);
   }
   function loadTesseract() {
     if (window.Tesseract) return Promise.resolve(window.Tesseract);
@@ -671,11 +721,12 @@
   }
   async function scanReceipt(file) {
     let aiErr = '';
+    const srv = getServerUrl();
     const key = S.settings.geminiKey || ($('#sGemini') ? $('#sGemini').value.trim() : '');
-    if (key) {
+    if (srv || key) {
       toast('🤖 AI가 영수증을 분석하고 있어요...', 0);
       try {
-        const items = await analyzeWithGemini(file, key);
+        const items = srv ? await analyzeWithServer(file) : await analyzeWithGemini(file, key);
         if (items.length >= 2) {
           toast(`🤖 AI가 ${items.length}건을 정확히 읽어왔어요 ✨`);
           return openBatchForm(items, '🤖 Gemini AI 분석');
@@ -760,6 +811,75 @@
     const f = e.target.files[0]; e.target.value = '';
     if (f) scanReceipt(f);
   };
+
+  // ---------- 계정 / 서버 동기화 모달 ----------
+  async function syncFromServer() {
+    if (!AUTH.token || !getServerUrl()) return;
+    const res = await apiFetch('/api/data');
+    if (res.data && Array.isArray(res.data.txs)) {
+      S = res.data; S.customCats ||= []; S.keywords ||= {}; applyTheme();
+      localStorage.setItem(KEY, JSON.stringify(S));
+      render();
+    } else if (S.txs.length || S.cards.length) {
+      await apiFetch('/api/data', { method: 'PUT', body: JSON.stringify({ data: S }) });
+    }
+  }
+  function openAuthModal() {
+    const srv = getServerUrl();
+    if (AUTH.user) {
+      openModal(`<h3 style="margin-top:0">👤 내 계정</h3>
+        <p class="muted"><b>${esc(AUTH.user.username)}</b>님으로 로그인 중이에요.</p>
+        <label>서버 주소</label><input id="aSrv" value="${esc(srv)}" placeholder="https://how-spend-money-api.xxx.workers.dev">
+        <div class="btns">
+          <button class="btn gray" id="aSync">지금 동기화</button>
+          <button class="btn red" id="aLogout">로그아웃</button>
+        </div>
+        <div class="btns"><button class="btn gray" id="aClose">닫기</button></div>`);
+      $('#aClose').onclick = closeModal;
+      $('#aSync').onclick = async () => {
+        AUTH.serverUrl = $('#aSrv').value.trim(); saveAuth();
+        try { await syncFromServer(); toast('동기화 완료 ✨'); closeModal(); }
+        catch (e) { toast('동기화 오류: ' + e.message); }
+      };
+      $('#aLogout').onclick = async () => {
+        try { await apiFetch('/api/auth/logout', { method: 'POST' }); } catch (e) {}
+        AUTH = { serverUrl: $('#aSrv').value.trim() }; saveAuth(); closeModal(); render(); toast('로그아웃했어요');
+      };
+      return;
+    }
+    let mode = 'login';
+    openModal(`<h3 style="margin-top:0">👤 로그인 · 회원가입</h3>
+      <div class="seg" id="aSeg" style="margin-bottom:10px">
+        <button data-m="login" class="on i">로그인</button><button data-m="reg">회원가입</button>
+      </div>
+      <label>아이디</label><input id="aId" autocomplete="username" placeholder="2자 이상">
+      <label>비밀번호</label><input id="aPw" type="password" autocomplete="current-password" placeholder="4자 이상">
+      ${DEFAULT_SERVER_URL ? '' : `<label>서버 주소 (Cloudflare Workers)</label><input id="aSrv" value="${esc(srv)}" placeholder="https://how-spend-money-api.xxx.workers.dev">`}
+      <p class="muted" style="margin:8px 0 0">서버 배포 방법은 저장소의 <code>server/DEPLOY.md</code>를 참고하세요.</p>
+      <div class="btns"><button class="btn gray" id="aCancel">취소</button><button class="btn" id="aGo">로그인</button></div>`);
+    $('#aSeg').onclick = e => {
+      const b = e.target.closest('[data-m]'); if (!b) return;
+      mode = b.dataset.m;
+      document.querySelectorAll('#aSeg button').forEach(x => x.classList.toggle('on', x === b));
+      document.querySelectorAll('#aSeg button').forEach(x => x.classList.toggle('i', x === b));
+      $('#aGo').textContent = mode === 'login' ? '로그인' : '회원가입';
+    };
+    $('#aCancel').onclick = closeModal;
+    $('#aGo').onclick = async () => {
+      if ($('#aSrv')) { AUTH.serverUrl = $('#aSrv').value.trim(); saveAuth(); }
+      const username = $('#aId').value.trim(), password = $('#aPw').value;
+      if (!username || !password) return toast('아이디와 비밀번호를 입력해 주세요');
+      try {
+        const path = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
+        const d = await apiFetch(path, { method: 'POST', body: JSON.stringify({ username, password }) });
+        AUTH.token = d.token; AUTH.user = d.user; saveAuth();
+        await syncFromServer();
+        closeModal(); render(); toast(`${d.user.username}님 환영해요 ✨`);
+      } catch (e) { toast(e.message); }
+    };
+  }
+  $('#authBtn').onclick = openAuthModal;
+  if (AUTH.token && getServerUrl()) syncFromServer().catch(() => {});
 
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
   $('#prevM').onclick = () => { cur.setMonth(cur.getMonth() - 1); render(); };

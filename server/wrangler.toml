@@ -1,0 +1,9 @@
+name = "how-spend-money-api"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# 아래 database_id는 `npx wrangler d1 create spend-money-db` 실행 후 나온 ID로 교체하세요
+[[d1_databases]]
+binding = "DB"
+database_name = "spend-money-db"
+database_id = "YOUR_D1_DATABASE_ID"
