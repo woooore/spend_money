@@ -720,6 +720,29 @@
     });
   }
   async function scanReceipt(file) {
+    // 1순위: 앱(Capacitor) 내장 오프라인 온디바이스 OCR (인터넷 불필요, API 키 불필요)
+    const nativeOcr = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.OfflineOcr;
+    if (nativeOcr) {
+      toast('📱 기기 내장 AI로 영수증을 읽고 있어요...', 0);
+      try {
+        const b64 = await fileToBase64(file);
+        const { text } = await nativeOcr.recognize({ base64: b64 });
+        const r = Parser.parseReceipt(text, {
+          cards: S.cards, now: nowKST(),
+          defaultCardId: (S.cards.find(c => c.isDefault) || {}).id,
+          keywords: S.keywords
+        });
+        if (r.batch && r.batch.length) {
+          toast(`📱 오프라인 인식으로 ${r.batch.length}건을 읽어왔어요 ✨`);
+          return openBatchForm(r.batch, '📱 기기 내장 온디바이스 OCR (오프라인)');
+        }
+        toast(r.ok ? '영수증을 읽어왔어요! 확인 후 저장해 주세요 ✨' : '금액을 못 찾았어요. 직접 입력해 주세요');
+        return openForm(null, r);
+      } catch (err) {
+        toast('내장 OCR 오류: ' + (err.message || err));
+      }
+    }
+
     let aiErr = '';
     const srv = getServerUrl();
     const key = S.settings.geminiKey || ($('#sGemini') ? $('#sGemini').value.trim() : '');

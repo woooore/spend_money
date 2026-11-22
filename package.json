@@ -1,0 +1,16 @@
+{
+  "name": "how-spend-money",
+  "version": "1.0.0",
+  "description": "얼마썼니 - 음성·영수증 가계부 앱",
+  "scripts": {
+    "sync": "npx cap sync",
+    "android": "npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/core": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0"
+  }
+}
