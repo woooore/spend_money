@@ -38,4 +38,39 @@ for (const [input, expected] of cases) {
 
 assert.strictEqual(P.inferCategory('스타벅스 아메리카노', ctx.keywords, 'expense'), '식비');
 assert.strictEqual(P.inferCategory('교회 주일헌금', ctx.keywords, 'expense'), '헌금');
+
+// 다건 복합 문장 분리 테스트
+const multi1 = P.parseTransactions('떡볶이 만원어치 현금으로 먹고 카페가서 오천원 더 썻어', ctx);
+assert.strictEqual(multi1.length, 2);
+assert.deepStrictEqual(
+  multi1.map(x => ({ memo: x.memo, amount: x.amount, payment: x.payment, cardId: x.cardId, category: x.category })),
+  [
+    { memo: '떡볶이', amount: 10000, payment: 'cash', cardId: null, category: '식비' },
+    { memo: '카페', amount: 5000, payment: 'card', cardId: '1', category: '식비' }
+  ]
+);
+
+const multi2 = P.parseTransactions('어제 택시 만이천원 타고 스타벅스 사천오백원 쿠팡 충전기 삼만원 샀어', ctx);
+assert.strictEqual(multi2.length, 3);
+assert.deepStrictEqual(
+  multi2.map(x => ({ date: x.date, memo: x.memo, amount: x.amount, category: x.category })),
+  [
+    { date: '2026-11-23', memo: '택시', amount: 12000, category: '교통' },
+    { date: '2026-11-23', memo: '스타벅스', amount: 4500, category: '식비' },
+    { date: '2026-11-23', memo: '쿠팡 충전기', amount: 30000, category: '쇼핑' }
+  ]
+);
+
+const multi3 = P.parseTransactions('만원짜리 충전기랑 오천원짜리 케이블 샀어', ctx);
+assert.strictEqual(multi3.length, 2);
+assert.strictEqual(multi3[0].amount, 10000);
+assert.strictEqual(multi3[1].amount, 5000);
+
+// 단건에서 '타고' 등이 있어도 금액이 하나면 1건 유지
+const singleWithConn = P.parseTransactions('택시 타고 만원 냈어', ctx);
+assert.strictEqual(singleWithConn.length, 1);
+assert.strictEqual(singleWithConn[0].amount, 10000);
+assert.strictEqual(singleWithConn[0].memo, '택시');
+
+console.log('MULTI-TX TESTS PASSED!', JSON.stringify(multi1));
 console.log('ALL TESTS PASSED!');

@@ -219,7 +219,7 @@
     // 할부 먼저 추출 ("12개월 할부", "3개월 무이자" — 금액 오인식 방지)
     let installment = 1;
     let interestFree = !/유이자/.test(work);
-    const instM = work.match(/(\d{1,2})\s*개월\s*(?:무이자|유이자)?\s*(?:할부)?/);
+    const instM = work.match(/(\d{1,2})\s*개월\s*(?:무이자|유이자)?\s*(?:할부)?(?:로|으로)?/);
     if (instM && +instM[1] >= 2 && +instM[1] <= 60) {
       installment = +instM[1];
       work = work.replace(instM[0], ' ');
@@ -229,8 +229,8 @@
     // 날짜 표현을 먼저 파악 후 숫자형 날짜("11월 10일", "3일 전")는 work에서 제거해 금액 오인식 방지
     const date = detectDate(text, now);
     work = work
-      .replace(/사흘\s?전|나흘\s?전|그저께|그제|엊그제|어제|오늘|\d+\s?일\s?전|\d{1,2}\s?월\s?\d{1,2}\s?일|(?:지난\s*주?\s*)?[일월화수목금토]요일/g, ' ')
-      .replace(/(?<![0-9])\d{1,2}\s?일(?!\s?(?:전|간|동안|차|시불))/g, ' ');
+      .replace(/(?:사흘\s?전|나흘\s?전|그저께|그제|엊그제|어제|오늘|\d+\s?일\s?전|\d{1,2}\s?월\s?\d{1,2}\s?일|(?:지난\s*주?\s*)?[일월화수목금토]요일)(?:은|는|에는|에|도)?/g, ' ')
+      .replace(/(?<![0-9])\d{1,2}\s?일(?!\s?(?:전|간|동안|차|시불))(?:은|는|에는|에)?/g, ' ');
 
     // 결제수단(카드 별명) 찾기: 긴 별명 우선
     // 음성인식은 "삼성이로"를 "삼성 2", "삼성 이로", "삼성이로" 등으로 적기 때문에 유연하게 매칭
@@ -284,14 +284,15 @@
       ? matchCategory(text, INCOME_CATEGORIES, '기타수입')
       : matchCategory(text, CATEGORIES, '기타지출'));
 
-    // 메모: 군더더기 서술어·조사 정리
+    // 메모: 군더더기 서술어·조사·연결어미 정리
     let memo = work
       .replace(/(?:체크|신용)?\s*카드(?:로|으로)?|현금(?:으로|로)?/g, ' ')
-      .replace(/(?:주고|사|시켜)\s*(?:먹었어(?:요)?|마셨어(?:요)?|샀어(?:요)?)/g, ' ')
+      .replace(/(?:주고|사|시켜)\s*(?:먹었어(?:요)?|마셨어(?:요)?|샀어(?:요)?|먹고|마시고)/g, ' ')
       .replace(/타고\s*왔어(?:요)?|하고\s*왔어(?:요)?|다녀왔어(?:요)?/g, ' ')
-      .replace(/샀어요?|삿어요?|샀다|샀음|썼어요?|썼다|썼음|결제(?:했어요?|했음|함)?|사용(?:했어요?|함)?|입금(?:됐어요?|되었어요?|됨)?|들어왔어요?|받았어요?|받음|냈어요?|냈음|먹었어요?|먹음|마셨어요?|탔어요?|했어요?|했어/g, ' ')
-      .replace(/(?:^|\s)(?:나는|내가|나|저|제가)(?=\s|$)/g, ' ')
-      .replace(/(?:으로|로|에서|에서는|에|을|를|이|가|은|는|짜리|어치|정도)(?=\s|$)/g, ' ')
+      .replace(/(?:에\s*)?(?:가서|들러서|갔다가|들렀다가)(?=\s|$)/g, ' ')
+      .replace(/샀어요?|삿어요?|샀다|샀음|샀고|썼어요?|썻어요?|썼다|썻다|썼음|썻음|썼고|썻고|결제(?:했어요?|했음|함|하고)?|계산(?:했어요?|하고)?|사용(?:했어요?|함|하고)?|입금(?:됐어요?|되었어요?|됨|됐고)?|들어왔어요?|들어왔고|받았어요?|받았고|받음|냈어요?|냈고|냈음|먹었어요?|먹었고|먹음|먹고|마셨어요?|마셨고|마시고|탔어요?|탔고|타고|사고|쓰고|내고|보고|긁고|했어요?|했어|하고/g, ' ')
+      .replace(/(?:^|\s)(?:나는|내가|나|저|제가|더|또|그리고|그다음에?|에|로|으로)(?=\s|$)/g, ' ')
+      .replace(/(?:에서|에서는|으로|을|를|이랑|랑|짜리|어치|정도)(?=\s|$)/g, ' ')
       .replace(/\s+/g, ' ').trim();
     if (!memo) memo = category;
 
@@ -303,6 +304,116 @@
       payment: card ? 'card' : (cash ? 'cash' : 'none'),
       ok: amount > 0
     };
+  }
+
+  const HAS_DATE_WORD_RE = /사흘\s?전|나흘\s?전|그저께|그제|엊그제|어제|오늘|\d+\s?일\s?전|\d{1,2}\s?월\s?\d{1,2}\s?일|(?:지난\s*주?\s*)?[일월화수목금토]요일|(?<![0-9])\d{1,2}\s?일(?!\s?(?:전|간|동안|차|시불))/;
+
+  // 한 절 안에 연결어 없이 여러 금액이 나열된 경우 분리 ("점심 만원 커피 오천원", "만원짜리 충전기 오천원짜리 케이블")
+  function splitJuxtaposedAmounts(chunk) {
+    const spans = [];
+    let cursor = 0, rest = chunk;
+    // 할부·날짜 숫자를 같은 길이 공백으로 가려서 금액 위치만 정확히 탐색
+    const masked = chunk
+      .replace(/\d{1,2}\s*개월|\d{1,2}\s?월\s?\d{1,2}\s?일|\d+\s?일\s?전/g, m => ' '.repeat(m.length));
+    rest = masked;
+    while (rest.length > 0) {
+      const r = extractAmount(rest);
+      if (!r.amount || !r.matched) break;
+      const idx = rest.indexOf(r.matched);
+      if (idx < 0) break;
+      const absStart = cursor + idx;
+      let absEnd = absStart + r.matched.length;
+      const tail = chunk.slice(absEnd).match(/^\s*(?:어치|짜리)?/);
+      if (tail && tail[0]) absEnd += tail[0].length;
+      spans.push({ start: absStart, end: absEnd, isJjari: /짜리\s*$/.test(chunk.slice(absStart, absEnd)) });
+      cursor = absEnd;
+      rest = masked.slice(cursor);
+    }
+    if (spans.length < 2) return [chunk];
+
+    const parts = [];
+    if (spans[0].isJjari || !chunk.slice(0, spans[0].start).trim()) {
+      // "만원짜리 충전기 오천원짜리 케이블" 형태: 각 금액 시작점 기준으로 분리
+      for (let i = 0; i < spans.length; i++) {
+        const s = i === 0 ? 0 : spans[i].start;
+        const e = i + 1 < spans.length ? spans[i + 1].start : chunk.length;
+        parts.push(chunk.slice(s, e).trim());
+      }
+    } else {
+      // "점심 만원 커피 오천원" 형태: 각 금액(+직후 현금/카드 표시) 끝점 기준으로 분리
+      let prev = 0;
+      for (let i = 0; i < spans.length; i++) {
+        if (i === spans.length - 1) {
+          parts.push(chunk.slice(prev).trim());
+        } else {
+          let cut = spans[i].end;
+          const payTail = chunk.slice(cut).match(/^\s*(?:현금(?:으로|로)?|(?:체크|신용)?카드(?:로|으로)?)/);
+          if (payTail) cut += payTail[0].length;
+          parts.push(chunk.slice(prev, cut).trim());
+          prev = cut;
+        }
+      }
+    }
+    return parts.filter(Boolean);
+  }
+
+  /**
+   * 복합 문장에서 여러 거래를 한 번에 분리·파싱
+   * 예: "떡볶이 만원어치 현금으로 먹고 카페가서 오천원 더 썼어" → 2건 반환
+   */
+  function parseTransactions(rawText, ctx) {
+    ctx = ctx || {};
+    const norm = normalizeSpeechText(rawText).trim();
+    if (!norm) return [parseTransaction('', ctx)];
+
+    // 1단계: 연결어미·접속사·쉼표 기준으로 절 후보 분리
+    const connRe = /(?:,|\/|\n|\s+(?:그리고|그다음에?|그러고\s*나서|또|추가로)\s+|(?<=(?:먹고|마시고|타고|사고|쓰고|내고|보고|결제하고|계산하고|사용하고|긁고|주고|받았고|들어왔고|썼고|썻고|샀고|탔고|냈고|먹었고|마셨고|갔다가|들렀다가))\s+|(?<=[가-힣0-9])(?:이랑|랑|하고|과|와)\s+)/g;
+    const rawTokens = norm.split(connRe).map(s => s.trim()).filter(Boolean);
+
+    // 각 후보가 독립 거래(금액 보유)인지 확인하며, 금액 없는 조각("택시 타고"의 "택시" 등)은 인접 절과 병합
+    const merged = [];
+    let pending = '';
+    for (const tok of rawTokens) {
+      const cand = pending ? (pending + ' ' + tok) : tok;
+      const test = parseTransaction(cand, ctx);
+      if (test.ok) {
+        merged.push(cand);
+        pending = '';
+      } else {
+        pending = cand;
+      }
+    }
+    if (pending) {
+      if (merged.length) merged[merged.length - 1] += ' ' + pending;
+      else merged.push(pending);
+    }
+
+    // 2단계: 한 절 안에 연결어 없이 여러 금액이 나열된 경우도 분리
+    const finalChunks = [];
+    for (const ch of merged) {
+      const sub = splitJuxtaposedAmounts(ch);
+      if (sub.length >= 2 && sub.every(s => parseTransaction(s, ctx).ok)) {
+        finalChunks.push(...sub);
+      } else {
+        finalChunks.push(ch);
+      }
+    }
+
+    if (finalChunks.length <= 1) return [parseTransaction(norm, ctx)];
+
+    // 3단계: 앞 절에 날짜("어제" 등)가 있고 뒷 절에 날짜 언급이 없으면 날짜 상속
+    let inheritedDate = null;
+    const results = finalChunks.map(ch => {
+      const r = parseTransaction(ch, ctx);
+      if (HAS_DATE_WORD_RE.test(ch)) {
+        inheritedDate = r.date;
+      } else if (inheritedDate) {
+        r.date = inheritedDate;
+      }
+      return r;
+    }).filter(r => r.ok);
+
+    return results.length ? results : [parseTransaction(norm, ctx)];
   }
 
   // 카드 매칭 공통 헬퍼
@@ -455,7 +566,7 @@
     };
   }
 
-  const api = { parseTransaction, parseReceipt, parseReceiptList, inferCategory, normalizeSpeechText, koreanToNumber, CATEGORIES, INCOME_CATEGORIES, ymd };
+  const api = { parseTransaction, parseTransactions, parseReceipt, parseReceiptList, inferCategory, normalizeSpeechText, koreanToNumber, CATEGORIES, INCOME_CATEGORIES, ymd };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Parser = api;
 })(typeof window !== 'undefined' ? window : globalThis);

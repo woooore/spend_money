@@ -625,8 +625,9 @@
       $('#fVoice').onclick = () => {
         closeModal();
         startVoiceSession(text => {
-          const r = Parser.parseTransaction(text, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() });
-          openForm(null, r);
+          const list = Parser.parseTransactions(text, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() });
+          if (list.length >= 2) openBatchForm(list, '🎤 음성 다건 자동 분리');
+          else openForm(null, list[0]);
         });
       };
       $('#fInstChips').onclick = e => {
@@ -643,8 +644,10 @@
       const runSentenceParse = () => {
         const val = $('#fSent').value.trim();
         if (!val) return toast('문장을 입력해 주세요');
-        const r = Parser.parseTransaction(val, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() });
-        closeModal(); openForm(null, r);
+        const list = Parser.parseTransactions(val, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() });
+        closeModal();
+        if (list.length >= 2) openBatchForm(list, '💬 한 문장에서 ' + list.length + '건을 분리했어요');
+        else openForm(null, list[0]);
       };
       $('#fParse').onclick = runSentenceParse;
       $('#fSent').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); runSentenceParse(); } };
@@ -812,23 +815,30 @@
     let webRec = null;
 
     const currentText = () => $('#vInput') ? $('#vInput').value.trim() : (finalText + ' ' + interim).trim();
-    const parseCurrent = txt => Parser.parseTransaction(txt, {
+    const parseCurrentList = txt => Parser.parseTransactions(txt, {
       cards: S.cards, salary: S.settings.salary, now: nowKST(),
       defaultCardId: (S.cards.find(c => c.isDefault) || {}).id,
       keywords: S.keywords, incomeCats: incomeCatNames()
     });
 
+    function fmtItemLine(p) {
+      const c = cardOf(p.cardId);
+      const cardStr = c ? `${c.emoji || '💳'}${esc(c.nickname || c.name)}` : (p.payment === 'cash' ? '💵현금' : '');
+      return `<b>${p.date.slice(5)}</b> · ${ICON[p.category] || '🏷️'} <b>${esc(p.category)}</b>${cardStr ? ' · ' + cardStr : ''}${p.installment > 1 ? ` · <b>${p.installment}개월할부</b>` : ''} · <b class="${p.type === 'income' ? 'inc' : 'exp'}">${p.type === 'income' ? '+' : '-'}${won(p.amount)}</b> · "${esc(p.memo)}"`;
+    }
+
     function updatePreview(txt) {
       const el = $('#vPrev'); if (!el) return;
       if (!txt) {
-        el.innerHTML = '💬 예: "어제 삼성이로 쿠팡 충전기 삼만원" · "월급 들어왔어"';
+        el.innerHTML = '💬 예: "떡볶이 만원 현금으로 먹고 카페 오천원 썼어" (여러 건도 자동 분리!)';
         return;
       }
-      const p = parseCurrent(txt);
-      const c = cardOf(p.cardId);
-      const cardStr = c ? `${c.emoji || '💳'}${esc(c.nickname || c.name)}` : (p.payment === 'cash' ? '💵현금' : '');
-      if (p.ok) {
-        el.innerHTML = `✅ <b>${p.date.slice(5)}</b> · ${ICON[p.category] || '🏷️'} <b>${esc(p.category)}</b>${cardStr ? ' · ' + cardStr : ''}${p.installment > 1 ? ` · <b>${p.installment}개월할부</b>` : ''} · <b class="${p.type === 'income' ? 'inc' : 'exp'}">${p.type === 'income' ? '+' : '-'}${won(p.amount)}</b> · "${esc(p.memo)}"`;
+      const list = parseCurrentList(txt);
+      const valid = list.filter(x => x.ok);
+      if (valid.length >= 2) {
+        el.innerHTML = `✅ <b>${valid.length}건 자동 분리!</b><br>` + valid.map((p, i) => `${i + 1}. ${fmtItemLine(p)}`).join('<br>');
+      } else if (valid.length === 1) {
+        el.innerHTML = `✅ ` + fmtItemLine(valid[0]);
       } else {
         el.innerHTML = `👂 인식 중: "${esc(txt)}" <span class="muted">(금액을 말씀해 주세요)</span>`;
       }
@@ -881,12 +891,12 @@
     $('#vCommit').onclick = () => finish(true);
     $('#vEdit').onclick = () => {
       const txt = currentText();
-      const p = txt ? parseCurrent(txt) : null;
+      const list = txt ? parseCurrentList(txt) : [];
       finish(false);
-      openForm(null, p);
+      if (list.length >= 2) openBatchForm(list, '🎤 음성 다건 수정');
+      else openForm(null, list[0] || null);
     };
     $('#vInput').onfocus = () => {
-      // 사용자가 텍스트칸을 직접 눌러 고칠 때는 자동 종료를 멈추고 편하게 수정하게 함
       manualMode = true;
       stopTimer();
       stopEngines();
@@ -903,9 +913,9 @@
       const txt = (finalText + ' ' + interim).replace(/\s+/g, ' ').trim();
       const inp = $('#vInput'); if (inp) inp.value = txt;
       updatePreview(txt);
-      const p = parseCurrent(txt);
+      const list = parseCurrentList(txt);
       // 금액까지 인식됐으면 3초 뒤 자동 등록, 아직 금액 말하기 전(뜸 들이는 중)이면 5초 여유!
-      armAutoFinish(p.ok ? 3000 : 5000);
+      armAutoFinish(list.some(x => x.ok) ? 3000 : 5000);
     };
 
     if (nativeSpeech) {
@@ -961,39 +971,58 @@
 
   $('#micBtn').onclick = () => startVoiceSession(handleVoice);
 
-  // 음성 결과를 확인창 없이 바로 등록 (할부 음성도 자동 분할 지원, 금액 미인식 시만 입력창)
+  // 음성 결과를 확인창 없이 바로 등록 (한 문장 내 다건 분리 및 할부 분할 모두 지원!)
   function handleVoice(text) {
-    const p = Parser.parseTransaction(text, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() });
-    if (!p.ok) { toast('금액을 못 알아들었어요: ' + text); return openForm(null, p); }
-    const c = cardOf(p.cardId);
-    const n = (p.type === 'expense' && p.installment > 1) ? p.installment : 1;
-    let undoFn;
+    const list = Parser.parseTransactions(text, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() });
+    const valid = list.filter(x => x.ok);
+    if (!valid.length) { toast('금액을 못 알아들었어요: ' + text); return openForm(null, list[0]); }
 
-    if (n > 1) {
-      const base = Math.floor(p.amount / n), rem = p.amount - base * n;
-      const fp = firstPayDate(p.date, c && c.payDay);
-      const gid = uid();
-      for (let i = 0; i < n; i++) {
-        S.txs.push({
-          id: uid(), type: 'expense', amount: i === 0 ? base + rem : base,
-          date: addMonths(fp, i), category: p.category,
-          memo: `[${i + 1}/${n}] ${p.memo}`, cardId: p.cardId, payment: p.payment,
-          installmentGroup: gid, installmentInfo: `${i + 1}/${n}`
-        });
+    const addedIds = [], addedGroups = [];
+    let lastDate = selDay;
+
+    for (const p of valid) {
+      const c = cardOf(p.cardId);
+      const n = (p.type === 'expense' && p.installment > 1) ? p.installment : 1;
+      if (n > 1) {
+        const base = Math.floor(p.amount / n), rem = p.amount - base * n;
+        const fp = firstPayDate(p.date, c && c.payDay);
+        const gid = uid();
+        for (let i = 0; i < n; i++) {
+          S.txs.push({
+            id: uid(), type: 'expense', amount: i === 0 ? base + rem : base,
+            date: addMonths(fp, i), category: p.category,
+            memo: `[${i + 1}/${n}] ${p.memo}`, cardId: p.cardId, payment: p.payment,
+            installmentGroup: gid, installmentInfo: `${i + 1}/${n}`
+          });
+        }
+        addedGroups.push(gid);
+        lastDate = fp;
+      } else {
+        const tx = { id: uid(), type: p.type, amount: p.amount, date: p.date, category: p.category, memo: p.memo, cardId: p.cardId, payment: p.payment };
+        S.txs.push(tx);
+        addedIds.push(tx.id);
+        lastDate = tx.date;
       }
-      save(); selDay = fp; const d = new Date(fp); cur = new Date(d.getFullYear(), d.getMonth(), 1);
-      undoFn = () => { S.txs = S.txs.filter(x => x.installmentGroup !== gid); };
-    } else {
-      const tx = { id: uid(), type: p.type, amount: p.amount, date: p.date, category: p.category, memo: p.memo, cardId: p.cardId, payment: p.payment };
-      S.txs.push(tx); save();
-      selDay = tx.date; const d = new Date(tx.date); cur = new Date(d.getFullYear(), d.getMonth(), 1);
-      undoFn = () => { S.txs = S.txs.filter(x => x.id !== tx.id); };
     }
+
+    save();
+    selDay = lastDate; const d = new Date(lastDate); cur = new Date(d.getFullYear(), d.getMonth(), 1);
     render();
+
     const t = $('#toast');
-    t.innerHTML = `✅ ${p.date.slice(5)} · ${esc(p.memo)} · ${p.category}${n > 1 ? ` (${n}개월)` : ''} · ${p.type === 'income' ? '+' : '-'}${won(p.amount)}${c ? ' · ' + (c.emoji || '💳') + esc(c.nickname || c.name) : ''}<br><small>"${esc(text)}"</small> <button id="undoV" class="chip">되돌리기</button>`;
-    t.classList.remove('hidden'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.add('hidden'), 7000);
-    $('#undoV').onclick = () => { undoFn(); save(); t.classList.add('hidden'); render(); };
+    if (valid.length === 1) {
+      const p = valid[0], c = cardOf(p.cardId), n = (p.type === 'expense' && p.installment > 1) ? p.installment : 1;
+      t.innerHTML = `✅ ${p.date.slice(5)} · ${esc(p.memo)} · ${p.category}${n > 1 ? ` (${n}개월)` : ''} · ${p.type === 'income' ? '+' : '-'}${won(p.amount)}${c ? ' · ' + (c.emoji || '💳') + esc(c.nickname || c.name) : (p.payment === 'cash' ? ' · 💵현금' : '')}<br><small>"${esc(text)}"</small> <button id="undoV" class="chip">되돌리기</button>`;
+    } else {
+      const sum = valid.reduce((a, x) => a + (x.type === 'income' ? x.amount : -x.amount), 0);
+      const summaryNames = valid.map(x => `${esc(x.memo)}(${won(x.amount)})`).join(', ');
+      t.innerHTML = `✅ <b>${valid.length}건 따로따로 등록 완료!</b> (${sum >= 0 ? '+' : '-'}${won(Math.abs(sum))})<br><small>${summaryNames}</small> <button id="undoV" class="chip">되돌리기</button>`;
+    }
+    t.classList.remove('hidden'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.add('hidden'), 7500);
+    $('#undoV').onclick = () => {
+      S.txs = S.txs.filter(x => !addedIds.includes(x.id) && (!x.installmentGroup || !addedGroups.includes(x.installmentGroup)));
+      save(); t.classList.add('hidden'); render();
+    };
   }
   $('#addBtn').onclick = () => openForm();
 
@@ -1185,33 +1214,40 @@
       openForm();
     }
   }
-  // 카드 이용내역 캡처 등 다건 일괄 등록 모달
+  // 카드 이용내역 캡처 / 음성 다건 등 일괄 등록 모달 (항목별 결제수단 유지 지원)
   function openBatchForm(items, sourceNote) {
-    const defCardId = (items[0] && items[0].cardId) || (S.cards.find(c => c.isDefault) || {}).id || 'none';
-    const cardOpts = `<option value="none">선택 안 함</option><option value="cash">현금</option>` +
-      S.cards.map(c => `<option value="${c.id}" ${defCardId === c.id ? 'selected' : ''}>${c.emoji || '💳'} ${esc(c.nickname || c.name)} (${esc(c.name)})</option>`).join('');
-    const rows = items.map((it, i) => `
+    const payValOf = it => it.cardId ? it.cardId : (it.payment === 'cash' ? 'cash' : 'none');
+    const makePayOpts = sel => `<option value="none" ${sel === 'none' ? 'selected' : ''}>미지정</option><option value="cash" ${sel === 'cash' ? 'selected' : ''}>💵 현금</option>` +
+      S.cards.map(c => `<option value="${c.id}" ${sel === c.id ? 'selected' : ''}>${c.emoji || '💳'} ${esc(c.nickname || c.name)}</option>`).join('');
+    const rows = items.map((it, i) => {
+      const cats = it.type === 'income' ? INC_CATS : EXP_CATS;
+      return `
       <div class="box" style="padding:10px;margin-bottom:8px;background:var(--surface2);box-shadow:none">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
           <input type="checkbox" class="bChk" data-i="${i}" checked style="width:auto">
           <input type="date" class="bDate" data-i="${i}" value="${it.date}" style="flex:1;padding:6px 8px;font-size:13px">
-          <select class="bCat" data-i="${i}" style="width:110px;padding:6px 8px;font-size:13px">${EXP_CATS.map(c => `<option ${c === it.category ? 'selected' : ''}>${c}</option>`).join('')}</select>
+          <select class="bCat" data-i="${i}" style="width:98px;padding:6px;font-size:13px">${cats.map(c => `<option ${c === it.category ? 'selected' : ''}>${c}</option>`).join('')}</select>
+          <select class="bPayRow" data-i="${i}" style="width:104px;padding:6px;font-size:13px">${makePayOpts(payValOf(it))}</select>
         </div>
         <div style="display:flex;gap:8px">
           <input class="bMemo" data-i="${i}" value="${esc(it.memo)}" placeholder="내용" style="flex:1;padding:6px 8px;font-size:14px">
           <input type="text" inputmode="numeric" class="bAmt" data-i="${i}" value="${fmtMoney(it.amount)}" style="width:110px;padding:6px 8px;font-size:14px;text-align:right">
         </div>
-      </div>`).join('');
-    openModal(`<h3 style="margin-top:0">📋 이용내역 ${items.length}건 한 번에 등록</h3>
+      </div>`;
+    }).join('');
+    openModal(`<h3 style="margin-top:0">📋 내역 ${items.length}건 한 번에 등록</h3>
       ${sourceNote ? `<div class="note" style="margin:0 0 10px">${esc(sourceNote)}</div>` : ''}
-      <label style="margin-top:0">공통 결제수단</label><select id="bPay" style="margin-bottom:10px">${cardOpts}</select>
+      <label style="margin-top:0">전체 결제수단 일괄 변경 (선택 시 아래 항목 모두 변경)</label>
+      <select id="bPayAll" style="margin-bottom:10px"><option value="">항목별 결제수단 그대로 유지</option>${makePayOpts('')}</select>
       ${rows}
       <div class="btns"><button class="btn gray" id="bCancel">취소</button><button class="btn" id="bSave">${items.length}건 저장</button></div>`);
     $('#modalBox').querySelectorAll('.bAmt').forEach(el => bindMoneyInput(el));
+    $('#bPayAll').onchange = e => {
+      if (!e.target.value) return;
+      $('#modalBox').querySelectorAll('.bPayRow').forEach(s => { s.value = e.target.value; });
+    };
     $('#bCancel').onclick = closeModal;
     $('#bSave').onclick = () => {
-      const pay = $('#bPay').value;
-      const cardId = cardOf(pay) ? pay : null, payment = cardId ? 'card' : pay;
       let added = 0, lastDate = selDay;
       items.forEach((it, i) => {
         if (!$(`.bChk[data-i="${i}"]`).checked) return;
@@ -1219,14 +1255,16 @@
         const date = $(`.bDate[data-i="${i}"]`).value || selDay;
         const cat = $(`.bCat[data-i="${i}"]`).value;
         const memo = $(`.bMemo[data-i="${i}"]`).value.trim() || cat;
-        S.txs.push({ id: uid(), type: 'expense', amount: amt, date, category: cat, memo, cardId, payment });
+        const pay = $(`.bPayRow[data-i="${i}"]`).value;
+        const cardId = cardOf(pay) ? pay : null, payment = cardId ? 'card' : pay;
+        S.txs.push({ id: uid(), type: it.type || 'expense', amount: amt, date, category: cat, memo, cardId, payment });
         added++; lastDate = date;
       });
       if (!added) return toast('저장할 내역을 선택해 주세요');
       save(); selDay = lastDate; const d = new Date(lastDate); cur = new Date(d.getFullYear(), d.getMonth(), 1);
       closeModal(); render(); toast(`${added}건이 등록됐어요 ✨`);
     };
-    bindEnterFlow($('#modalBox'), () => [$('#bPay'), ...$('#modalBox').querySelectorAll('.bDate, .bCat, .bMemo, .bAmt')], () => $('#bSave').click());
+    bindEnterFlow($('#modalBox'), () => [...$('#modalBox').querySelectorAll('.bDate, .bCat, .bPayRow, .bMemo, .bAmt')], () => $('#bSave').click());
   }
   $('#photoBtn').onclick = () => $('#receiptFile').click();
   $('#receiptFile').onchange = e => {
