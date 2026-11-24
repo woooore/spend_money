@@ -22,6 +22,105 @@
   const won = n => Math.round(n).toLocaleString('ko-KR') + '원';
   const uid = () => Math.random().toString(36).slice(2, 10);
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const moneyVal = el => el ? (parseInt(String(el.value || '').replace(/[^0-9]/g, ''), 10) || 0) : 0;
+  const fmtMoney = n => (+n > 0 ? Math.round(+n).toLocaleString('ko-KR') : '');
+
+  // 커서 위치를 유지하며 3자리 콤마 자동 포맷
+  function bindMoneyInput(el, onChange) {
+    if (!el) return;
+    el.addEventListener('input', () => {
+      const raw = el.value;
+      const digitsBefore = (raw.slice(0, el.selectionStart || 0).match(/\d/g) || []).length;
+      const digits = raw.replace(/\D/g, '');
+      if (!digits) { el.value = ''; if (onChange) onChange(0); return; }
+      const num = parseInt(digits, 10);
+      const fmt = num.toLocaleString('ko-KR');
+      el.value = fmt;
+      let pos = 0, seen = 0;
+      while (pos < fmt.length && seen < digitsBefore) {
+        if (/\d/.test(fmt[pos])) seen++;
+        pos++;
+      }
+      try { el.setSelectionRange(pos, pos); } catch (e) {}
+      if (onChange) onChange(num);
+    });
+  }
+
+  // 엔터키로 다음 입력칸·선택지로 자동 이동 (한글 조합 중 중복 실행 방지)
+  function bindEnterFlow(root, getSteps, onFinal) {
+    const clearStepHi = () => root.querySelectorAll('.step-active').forEach(x => x.classList.remove('step-active'));
+    const visibleSteps = () => (getSteps() || []).filter(el => el && el.offsetParent !== null && !el.disabled);
+
+    function focusStep(el) {
+      clearStepHi();
+      if (!el) { if (onFinal) onFinal(); return; }
+      if (el.hasAttribute('data-choice-group')) {
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        const box = el.closest('.step-box') || el;
+        box.classList.add('step-active');
+        box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const target = el.querySelector('.on') || el.querySelector('button');
+        if (target) setTimeout(() => { try { target.focus({ preventScroll: true }); } catch (e) {} }, 40);
+      } else {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setTimeout(() => {
+          try { el.focus({ preventScroll: true }); } catch (e) {}
+          if (el.tagName === 'SELECT' && el.showPicker) { try { el.showPicker(); } catch (e) {} }
+        }, 40);
+      }
+    }
+
+    function advanceFrom(curEl) {
+      const steps = visibleSteps();
+      const idx = steps.findIndex(s => s === curEl || s.contains(curEl));
+      if (idx >= 0 && idx + 1 < steps.length) focusStep(steps[idx + 1]);
+      else { clearStepHi(); if (onFinal) onFinal(); }
+    }
+
+    const syncHints = () => {
+      const steps = visibleSteps();
+      steps.forEach((s, i) => {
+        if (s.tagName === 'INPUT' || s.tagName === 'TEXTAREA') {
+          s.setAttribute('enterkeyhint', i === steps.length - 1 ? 'done' : 'next');
+        }
+      });
+    };
+    syncHints();
+
+    root.addEventListener('focusin', e => {
+      const grp = e.target.closest('[data-choice-group]');
+      clearStepHi();
+      if (grp) (grp.closest('.step-box') || grp).classList.add('step-active');
+    });
+
+    root.addEventListener('keydown', e => {
+      if (e.isComposing || e.keyCode === 229) return;
+      const grp = e.target.closest('[data-choice-group]');
+      if (grp && ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(e.key)) {
+        const btns = [...grp.querySelectorAll('button')];
+        if (!btns.length) return;
+        e.preventDefault();
+        let idx = btns.indexOf(document.activeElement);
+        if (idx < 0) idx = btns.findIndex(b => b.classList.contains('on'));
+        const dir = (e.key === 'ArrowRight' || e.key === 'ArrowDown') ? 1 : -1;
+        const next = btns[(idx + dir + btns.length) % btns.length];
+        if (next) { next.click(); next.focus({ preventScroll: true }); }
+        return;
+      }
+      if (e.key !== 'Enter' || e.shiftKey) return;
+      const t = e.target;
+      if (t.id === 'fSent') return; // 문장 분석칸은 자체 엔터 처리
+      if (t.tagName === 'BUTTON' && !grp) return; // 일반 버튼(저장/취소)은 기본 클릭 유지
+      const steps = visibleSteps();
+      const hit = steps.find(s => s === t || s.contains(t));
+      if (!hit) return;
+      e.preventDefault();
+      syncHints();
+      advanceFrom(hit);
+    });
+
+    return { focusStep, syncHints };
+  }
 
   let S = load();
   let cur = new Date(); cur.setDate(1);
@@ -159,8 +258,11 @@
         h += `<div class="dayhdr"><span>${t.date.slice(5)} (${'일월화수목금토'[new Date(t.date).getDay()]})</span><span>-${won(day.filter(x => x.type === 'expense').reduce((a, x) => a + x.amount, 0))}</span></div>`; }
       h += `<div class="box" style="padding:0 12px;margin-bottom:4px">${txRow(t)}</div>`;
     }
-    el.innerHTML = h; bindTx(el);
-    $('#q').oninput = e => { query = e.target.value; const pos = e.target.selectionStart; renderList(); const q = $('#q'); q.focus(); q.setSelectionRange(pos, pos); };
+    el.innerHTML = `<input id="q" enterkeyhint="search" placeholder="🔍 검색 (메모/카테고리)" value="${esc(query)}">` + h.slice(h.indexOf('>') + 1);
+    bindTx(el);
+    const qEl = $('#q');
+    qEl.oninput = e => { query = e.target.value; const pos = e.target.selectionStart; renderList(); const q = $('#q'); q.focus(); q.setSelectionRange(pos, pos); };
+    qEl.onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); qEl.blur(); } };
   }
 
   function renderStats() {
@@ -276,16 +378,20 @@
     const builtin = !isNew && !custom;
     const kw = (S.keywords[name] || []).join(', ');
     const type = custom ? custom.type : (BUILTIN_INC.includes(name) ? 'income' : 'expense');
+    const quickEmojis = ['⛪', '☕', '🐶', '🏋️', '🎮', '👶', '🚗', '💼', '🏦', '💝', '🍺', '✈️'];
     openModal(`<h3 style="margin-top:0">${isNew ? '🏷️ 새 카테고리' : esc(name) + ' 설정'}</h3>
       ${builtin ? '' : `<label>이름</label><input id="kName" value="${esc(name || '')}" placeholder="예: 헌금">
-        <label>이모지</label><input id="kEmoji" value="${esc(custom ? custom.emoji : '⛪')}" maxlength="4" style="width:90px;font-size:22px">
-        <label>종류</label><div class="seg" id="kType"><button data-t="expense" class="e ${type === 'expense' ? 'on' : ''}">지출</button><button data-t="income" class="i ${type === 'income' ? 'on' : ''}">수입</button></div>`}
+        <label>이모지</label><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input id="kEmoji" value="${esc(custom ? custom.emoji : '⛪')}" maxlength="4" style="width:76px;font-size:22px;text-align:center"><div class="chips" id="kEmojiPick" style="margin:0">${quickEmojis.map(em => `<button type="button" class="chip em" tabindex="-1">${em}</button>`).join('')}</div></div>
+        <div class="step-box"><label>종류</label><div class="seg" id="kType" data-choice-group><button type="button" data-t="expense" class="e ${type === 'expense' ? 'on' : ''}">지출</button><button type="button" data-t="income" class="i ${type === 'income' ? 'on' : ''}">수입</button></div></div>`}
       <label>이 단어가 들어가면 자동으로 ${builtin ? esc(name) : '이 카테고리'}로 분류 (쉼표로 구분)</label>
       <textarea id="kWords" rows="3" placeholder="예: 교회, 헌금, 십일조, 감사헌금">${esc(kw)}</textarea>
-      <p class="muted">내가 등록한 단어는 기본 분류보다 우선해요. 음성/문장 입력 모두 적용돼요.</p>
+      <p class="muted">내가 등록한 단어는 기본 분류보다 우선해요. 엔터키로 다음 항목으로 넘어가요.</p>
       <div class="btns">${custom ? '<button class="btn red" id="kDel">삭제</button>' : ''}<button class="btn gray" id="kCancel">취소</button><button class="btn" id="kSave">저장</button></div>`);
     let t = type;
-    if (!builtin) $('#kType').onclick = e => { const b = e.target.closest('[data-t]'); if (!b) return; t = b.dataset.t; document.querySelectorAll('#kType button').forEach(x => x.classList.toggle('on', x === b)); };
+    if (!builtin) {
+      $('#kType').onclick = e => { const b = e.target.closest('[data-t]'); if (!b) return; t = b.dataset.t; document.querySelectorAll('#kType button').forEach(x => x.classList.toggle('on', x === b)); };
+      $('#kEmojiPick').onclick = e => { const b = e.target.closest('button'); if (b) $('#kEmoji').value = b.textContent; };
+    }
     $('#kCancel').onclick = closeModal;
     if (custom) $('#kDel').onclick = () => {
       if (!confirm('카테고리를 삭제할까요? 기존 내역은 기타로 옮겨져요.')) return;
@@ -308,6 +414,8 @@
       if (words.length) S.keywords[finalName] = words; else delete S.keywords[finalName];
       save(); closeModal(); render(); toast('저장했어요');
     };
+    bindEnterFlow($('#modalBox'), () => builtin ? [$('#kWords')] : [$('#kName'), $('#kEmoji'), $('#kType'), $('#kWords')], () => $('#kSave').click());
+    setTimeout(() => (builtin ? $('#kWords') : $('#kName'))?.focus(), 60);
   }
 
   function renderSettings() {
@@ -321,11 +429,11 @@
       <button data-th="light" class="${S.settings.theme === 'light' ? 'on i' : ''}">라이트</button>
       <button data-th="dark" class="${S.settings.theme === 'dark' ? 'on i' : ''}">다크</button></div>
       <p class="muted" style="margin:8px 0 0">자동은 휴대폰의 다크/라이트 설정을 따라가요.</p></div>
-    <div class="box"><h3>기본 정보</h3>
-      <label>월급 (음성으로 "월급 들어왔어" 라고 하면 자동 입력돼요)</label><input id="sSalary" type="number" value="${S.settings.salary || ''}">
-      <label>월 예산</label><input id="sBudget" type="number" value="${S.settings.budget || ''}">
-      <label>🤖 AI 영수증 분석 키 (Gemini API Key · 선택)</label><input id="sGemini" type="password" value="${esc(S.settings.geminiKey || '')}" placeholder="AIza... (입력하면 AI가 영수증/내역 캡처를 정확히 분석해요)">
-      <p class="muted" style="margin:6px 0 0"><a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent)">Google AI Studio에서 무료 API 키 발급</a> · 키는 내 폰/브라우저에만 저장돼요</p>
+    <div class="box" id="sBasicBox"><h3>기본 정보</h3>
+      <label>월급 (음성으로 "월급 들어왔어" 라고 하면 자동 입력돼요)</label><div class="amt-box"><input id="sSalary" type="text" inputmode="numeric" value="${fmtMoney(S.settings.salary)}" placeholder="0"><span class="unit">원</span></div>
+      <label>월 예산</label><div class="amt-box"><input id="sBudget" type="text" inputmode="numeric" value="${fmtMoney(S.settings.budget)}" placeholder="0"><span class="unit">원</span></div>
+      <label>🤖 AI 영수증 분석 키 (Gemini API Key · 선택)</label><input id="sGemini" type="password" value="${esc(S.settings.geminiKey || '')}" placeholder="앱 버전은 내장 오프라인 AI가 자동 동작해요">
+      <p class="muted" style="margin:6px 0 0"><a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent)">Google AI Studio에서 무료 API 키 발급</a> · 웹 브라우저에서 AI 분석을 쓸 때만 필요해요</p>
       <div class="btns"><button class="btn" id="sSave">저장</button></div></div>
     <div class="box"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3 style="margin:0">카테고리 · 자동 분류 단어</h3><button class="chip" id="addCat">+ 새 카테고리</button></div>
       <p class="muted" style="margin:0 0 8px">카테고리를 눌러 단어를 등록하세요. 예: 교회·헌금·십일조 → ⛪ 헌금</p>
@@ -340,7 +448,10 @@
     $('#addCat').onclick = () => openCatForm();
     el.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => openCatForm(b.dataset.cat));
     $('#themeSeg').onclick = e => { const b = e.target.closest('[data-th]'); if (!b) return; S.settings.theme = b.dataset.th; applyTheme(); save(); renderSettings(); };
-    $('#sSave').onclick = () => { S.settings.salary = +$('#sSalary').value || 0; S.settings.budget = +$('#sBudget').value || 0; S.settings.geminiKey = $('#sGemini').value.trim(); save(); toast('저장됐어요'); render(); };
+    bindMoneyInput($('#sSalary'));
+    bindMoneyInput($('#sBudget'));
+    $('#sSave').onclick = () => { S.settings.salary = moneyVal($('#sSalary')); S.settings.budget = moneyVal($('#sBudget')); S.settings.geminiKey = $('#sGemini').value.trim(); save(); toast('저장됐어요'); render(); };
+    bindEnterFlow($('#sBasicBox'), () => [$('#sSalary'), $('#sBudget'), $('#sGemini')], () => $('#sSave').click());
     $('#exJson').onclick = () => download('가계부백업.json', JSON.stringify(S, null, 2), 'application/json');
     $('#exCsv').onclick = () => download('가계부.csv', '\ufeff날짜,구분,카테고리,금액,결제수단,메모\n' + S.txs.map(t => [t.date, t.type === 'income' ? '수입' : '지출', t.category, t.amount, cardOf(t.cardId)?.name || (t.payment === 'cash' ? '현금' : ''), '"' + (t.memo || '').replace(/"/g, '""') + '"'].join(',')).join('\n'), 'text/csv');
     $('#imJson').onclick = () => $('#file').click();
@@ -373,20 +484,43 @@
   function openForm(t, preset) {
     const isNew = !t;
     t = t || Object.assign({ id: uid(), type: 'expense', amount: '', date: selDay, category: '식비', memo: '', installment: 1, interestFree: true, cardId: (S.cards.find(c => c.isDefault) || {}).id || null, payment: S.cards.some(c => c.isDefault) ? 'card' : 'none' }, preset || {});
-    const instOpts = [1, 2, 3, 4, 5, 6, 10, 12, 18, 24, 36];
+    const instOpts = [1, 2, 3, 6, 10, 12, 24];
     const initInst = t.installment || 1;
     if (!instOpts.includes(initInst)) instOpts.push(initInst);
     instOpts.sort((a, b) => a - b);
+    const recentMemos = [...new Set(S.txs.slice().reverse().map(x => (x.memo || '').replace(/^\[\d+\/\d+\]\s*/, '').trim()).filter(m => m && !EXP_CATS.includes(m) && !INC_CATS.includes(m)))].slice(0, 6);
+
     openModal(`<h3 style="margin-top:0">${isNew ? '내역 추가' : '내역 수정'}</h3>
-      ${isNew ? `<div style="display:flex;gap:6px;margin-bottom:8px"><button type="button" class="btn gray" id="fPhoto" style="flex:1">📷 영수증 사진 올리기</button></div>
-        <label>🎤 문장으로 입력 (예: 어제 삼성이로 점심 만원)</label><div style="display:flex;gap:6px"><input id="fSent" placeholder="말하듯이 적어보세요"><button class="btn" id="fParse" style="white-space:nowrap">분석</button></div>` : ''}
-      <div class="seg" style="margin-top:10px"><button class="e" data-t="expense">지출</button><button class="i" data-t="income">수입</button></div>
-      <label>금액 (할부면 총 결제금액)</label><input id="fAmt" type="number" inputmode="numeric" value="${t.amount}">
-      <label>날짜</label><input id="fDate" type="date" value="${t.date}">
-      <label>카테고리</label><select id="fCat"></select>
-      <label>결제수단</label><select id="fPay"></select>
-      ${isNew ? `<div id="instWrap">
-        <label>할부</label><select id="fInst">${instOpts.map(n => `<option value="${n}" ${n === initInst ? 'selected' : ''}>${n === 1 ? '일시불' : n + '개월 할부'}</option>`).join('')}</select>
+      ${isNew ? `<div style="display:flex;gap:6px;margin-bottom:8px">
+          <button type="button" class="btn gray" id="fPhoto" style="flex:1;padding:10px">📷 영수증 사진</button>
+          <button type="button" class="btn gray" id="fVoice" style="flex:1;padding:10px">🎤 음성 채우기</button>
+        </div>
+        <div style="display:flex;gap:6px"><input id="fSent" enterkeyhint="go" placeholder="💬 한 줄 입력 (예: 어제 삼성이로 점심 만이천원)"><button type="button" class="btn" id="fParse" style="white-space:nowrap">분석</button></div>` : ''}
+      <div class="seg" id="fTypeSeg" style="margin-top:12px"><button type="button" class="e" data-t="expense">지출</button><button type="button" class="i" data-t="income">수입</button></div>
+
+      <label>금액 ${isNew ? '<span class="muted">(엔터 누르면 다음 칸으로 이동)</span>' : ''}</label>
+      <div class="amt-box"><input id="fAmt" type="text" inputmode="numeric" autocomplete="off" placeholder="0" value="${fmtMoney(t.amount)}"><span class="unit">원</span></div>
+      <div class="chips" id="fQuickAmt">${[['+1천', 1000], ['+5천', 5000], ['+1만', 10000], ['+5만', 50000], ['+10만', 100000], ['초기화', 0]].map(([lb, v]) => `<button type="button" class="chip" data-add="${v}" tabindex="-1">${lb}</button>`).join('')}</div>
+
+      <label>내용 (메모)</label>
+      <input id="fMemo" placeholder="예: 스타벅스, 쿠팡 충전기 (입력 시 카테고리 자동 추천)" value="${esc(t.memo)}">
+      ${isNew && recentMemos.length ? `<div class="chips" id="fRecentMemo">${recentMemos.map(m => `<button type="button" class="chip" tabindex="-1">${esc(m)}</button>`).join('')}</div>` : ''}
+
+      <div class="step-box"><label>카테고리</label><div class="chips" id="fCatChips" data-choice-group></div></div>
+
+      <div class="step-box" id="payStep"><label>결제수단</label><div class="chips" id="fPayChips" data-choice-group></div></div>
+
+      <label>날짜</label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input id="fDate" type="date" value="${t.date}" style="flex:1">
+        <button type="button" class="chip dquick" data-off="0" tabindex="-1">오늘</button>
+        <button type="button" class="chip dquick" data-off="-1" tabindex="-1">어제</button>
+        <button type="button" class="chip dquick" data-off="-2" tabindex="-1">그제</button>
+      </div>
+
+      ${isNew ? `<div id="instWrap" class="step-box">
+        <label>할부</label>
+        <div class="chips" id="fInstChips" data-choice-group>${instOpts.map(n => `<button type="button" class="chip ${n === initInst ? 'on' : ''}" data-inst="${n}">${n === 1 ? '일시불' : n + '개월'}</button>`).join('')}</div>
         <div id="instDetail" style="display:none;margin-top:8px;padding:10px;border-radius:12px;background:var(--surface2)">
           <label style="display:flex;align-items:center;gap:8px;margin:0 0 8px;color:var(--txt);font-size:14px"><input type="checkbox" id="fFree" style="width:auto" ${t.interestFree !== false ? 'checked' : ''}> 무이자 할부</label>
           <div id="fRateBox" style="display:none"><label style="margin-top:0">연 할부 수수료율 (%)</label><input id="fRate" type="number" step="0.1" value="14.0"></div>
@@ -394,30 +528,52 @@
           <div id="instPreview" class="note"></div>
         </div>
       </div>` : ''}
-      <label>메모</label><input id="fMemo" value="${esc(t.memo)}">
-      <div class="btns">${isNew ? '' : '<button class="btn red" id="fDel">삭제</button>'}<button class="btn gray" id="fCancel">취소</button><button class="btn" id="fSave">저장</button></div>`);
+      <div class="btns">${isNew ? '' : '<button type="button" class="btn red" id="fDel">삭제</button>'}<button type="button" class="btn gray" id="fCancel">취소</button><button type="button" class="btn" id="fSave">저장</button></div>`);
+
     let type = t.type;
-    const fill = () => {
-      document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.t === type));
-      document.querySelectorAll('.seg button').forEach(b => b.classList.toggle(b.classList[0], true));
+    let selCat = t.category || (type === 'income' ? '급여' : '식비');
+    let selPay = t.cardId ? t.cardId : (t.payment === 'cash' ? 'cash' : 'none');
+    let selInst = initInst;
+    let catTouched = !isNew || !!(preset && preset.category);
+
+    const renderCatChips = () => {
       const cats = type === 'income' ? INC_CATS : EXP_CATS;
-      $('#fCat').innerHTML = cats.map(c => `<option ${c === t.category ? 'selected' : ''}>${c}</option>`).join('');
-      $('#fPay').innerHTML = `<option value="none">선택 안 함</option><option value="cash" ${t.payment === 'cash' ? 'selected' : ''}>현금</option>` + S.cards.map(c => `<option value="${c.id}" ${t.cardId === c.id ? 'selected' : ''}>${c.emoji || '💳'} ${esc(c.nickname || c.name)} (${esc(c.name)})</option>`).join('');
+      if (!cats.includes(selCat)) selCat = cats[0];
+      $('#fCatChips').innerHTML = cats.map(c => `<button type="button" class="chip ${c === selCat ? 'on' : ''}" data-c="${esc(c)}">${ICON[c] || '🏷️'} ${esc(c)}</button>`).join('');
+    };
+    const renderPayChips = () => {
+      const opts = [
+        ...S.cards.map(c => ({ v: c.id, lb: `${c.emoji || '💳'} ${esc(c.nickname || c.name)}` })),
+        { v: 'cash', lb: '💵 현금' },
+        { v: 'none', lb: '선택 안 함' }
+      ];
+      if (!opts.some(o => o.v === selPay)) selPay = 'none';
+      $('#fPayChips').innerHTML = opts.map(o => `<button type="button" class="chip ${o.v === selPay ? 'on' : ''}" data-p="${esc(o.v)}">${o.lb}</button>`).join('');
+    };
+    const fill = () => {
+      document.querySelectorAll('#fTypeSeg button').forEach(b => {
+        b.classList.toggle('on', b.dataset.t === type);
+        b.classList.toggle(b.dataset.t === 'income' ? 'i' : 'e', true);
+      });
+      renderCatChips();
+      renderPayChips();
+      $('#payStep').style.display = type === 'expense' ? 'block' : 'none';
       if (isNew) $('#instWrap').style.display = type === 'expense' ? 'block' : 'none';
     };
     fill();
+
     const updateInst = (recalcDate) => {
       if (!isNew) return;
-      const n = +$('#fInst').value || 1;
+      const n = selInst || 1;
       $('#instDetail').style.display = (type === 'expense' && n > 1) ? 'block' : 'none';
       if (n <= 1) return;
       const free = $('#fFree').checked;
       $('#fRateBox').style.display = free ? 'none' : 'block';
       if (recalcDate) {
-        const c = cardOf($('#fPay').value);
+        const c = cardOf(selPay);
         $('#fFirstPay').value = firstPayDate($('#fDate').value, c && c.payDay);
       }
-      const amt = +$('#fAmt').value || 0;
+      const amt = moneyVal($('#fAmt'));
       const rate = free ? 0 : (+$('#fRate').value || 0);
       const totalPay = free ? amt : Math.round(amt * (1 + (rate / 100) * (n + 1) / 24));
       const per = Math.floor(totalPay / n);
@@ -426,18 +582,78 @@
         ? `월 ${won(per)} × ${n}개월 (${free ? '무이자' : '이자 포함 총 ' + won(totalPay)}) · ${fp.slice(5)}부터 매월 기록`
         : '금액을 입력하면 월 납입금이 계산돼요';
     };
+
+    bindMoneyInput($('#fAmt'), () => updateInst(false));
+    $('#fQuickAmt').onclick = e => {
+      const b = e.target.closest('[data-add]'); if (!b) return;
+      const v = +b.dataset.add;
+      $('#fAmt').value = v === 0 ? '' : fmtMoney(moneyVal($('#fAmt')) + v);
+      updateInst(false);
+      $('#fAmt').focus();
+    };
+    $('#fMemo').oninput = () => {
+      if (catTouched) return;
+      const g = Parser.inferCategory($('#fMemo').value, S.keywords, type);
+      if (g && g !== selCat) { selCat = g; renderCatChips(); }
+    };
+    if ($('#fRecentMemo')) {
+      $('#fRecentMemo').onclick = e => {
+        const b = e.target.closest('button'); if (!b) return;
+        $('#fMemo').value = b.textContent;
+        const g = Parser.inferCategory(b.textContent, S.keywords, type);
+        if (g) { selCat = g; renderCatChips(); }
+        $('#fMemo').focus();
+      };
+    }
+    $('#fCatChips').onclick = e => {
+      const b = e.target.closest('[data-c]'); if (!b) return;
+      selCat = b.dataset.c; catTouched = true; renderCatChips();
+    };
+    $('#fPayChips').onclick = e => {
+      const b = e.target.closest('[data-p]'); if (!b) return;
+      selPay = b.dataset.p; renderPayChips(); updateInst(true);
+    };
+    $('#modalBox').querySelectorAll('.dquick').forEach(b => b.onclick = () => {
+      const d = nowKST(); d.setDate(d.getDate() + (+b.dataset.off));
+      $('#fDate').value = Parser.ymd(d);
+      updateInst(true);
+    });
+
     if (isNew) {
       updateInst(false);
       $('#fPhoto').onclick = () => { closeModal(); $('#receiptFile').click(); };
-      $('#fInst').onchange = () => updateInst(true);
-      $('#fFree').onchange = () => updateInst(false);
-      $('#fAmt').oninput = () => updateInst(false);
+      $('#fVoice').onclick = () => {
+        closeModal();
+        startVoiceSession(text => {
+          const r = Parser.parseTransaction(text, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() });
+          openForm(null, r);
+        });
+      };
+      $('#fInstChips').onclick = e => {
+        const b = e.target.closest('[data-inst]'); if (!b) return;
+        selInst = +b.dataset.inst;
+        document.querySelectorAll('#fInstChips button').forEach(x => x.classList.toggle('on', x === b));
+        updateInst(true);
+        flow.syncHints();
+      };
+      $('#fFree').onchange = () => { updateInst(false); flow.syncHints(); };
       $('#fRate').oninput = () => updateInst(false);
-      $('#fPay').onchange = () => updateInst(true);
       $('#fDate').onchange = () => updateInst(true);
       $('#fFirstPay').onchange = () => updateInst(false);
+      const runSentenceParse = () => {
+        const val = $('#fSent').value.trim();
+        if (!val) return toast('문장을 입력해 주세요');
+        const r = Parser.parseTransaction(val, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() });
+        closeModal(); openForm(null, r);
+      };
+      $('#fParse').onclick = runSentenceParse;
+      $('#fSent').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); runSentenceParse(); } };
     }
-    document.querySelectorAll('.seg button').forEach(b => b.onclick = () => { type = b.dataset.t; t.category = type === 'income' ? '급여' : '식비'; fill(); });
+
+    document.querySelectorAll('#fTypeSeg button').forEach(b => b.onclick = () => {
+      type = b.dataset.t; selCat = type === 'income' ? '급여' : '식비'; catTouched = false;
+      fill(); if (flow) flow.syncHints();
+    });
     $('#fCancel').onclick = closeModal;
     if (!isNew) $('#fDel').onclick = () => {
       if (t.installmentGroup) {
@@ -448,23 +664,21 @@
       } else S.txs = S.txs.filter(x => x.id !== t.id);
       save(); closeModal(); render();
     };
-    if (isNew) $('#fParse').onclick = () => { const r = Parser.parseTransaction($('#fSent').value, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() }); closeModal(); openForm(null, r); };
     $('#fSave').onclick = () => {
-      const amt = +$('#fAmt').value; if (!(amt > 0)) return toast('금액을 입력해 주세요');
-      const pay = $('#fPay').value;
-      const cardId = cardOf(pay) ? pay : null, payment = cardId ? 'card' : pay;
-      const n = (isNew && type === 'expense') ? (+$('#fInst').value || 1) : 1;
+      const amt = moneyVal($('#fAmt')); if (!(amt > 0)) { $('#fAmt').focus(); return toast('금액을 입력해 주세요'); }
+      const cardId = cardOf(selPay) ? selPay : null, payment = cardId ? 'card' : selPay;
+      const n = (isNew && type === 'expense') ? (selInst || 1) : 1;
       if (n > 1) {
         const free = $('#fFree').checked;
         const rate = free ? 0 : (+$('#fRate').value || 0);
         const totalPay = free ? amt : Math.round(amt * (1 + (rate / 100) * (n + 1) / 24));
         const base = Math.floor(totalPay / n), rem = totalPay - base * n;
         const fp = $('#fFirstPay').value || $('#fDate').value;
-        const gid = uid(), memo = $('#fMemo').value.trim() || $('#fCat').value;
+        const gid = uid(), memo = $('#fMemo').value.trim() || selCat;
         for (let i = 0; i < n; i++) {
           S.txs.push({
             id: uid(), type: 'expense', amount: i === 0 ? base + rem : base,
-            date: addMonths(fp, i), category: $('#fCat').value,
+            date: addMonths(fp, i), category: selCat,
             memo: `[${i + 1}/${n}] ${memo}`, cardId, payment,
             installmentGroup: gid, installmentInfo: `${i + 1}/${n}`
           });
@@ -472,18 +686,37 @@
         save(); selDay = fp; const d = new Date(fp); cur = new Date(d.getFullYear(), d.getMonth(), 1);
         closeModal(); render(); toast(`${n}개월 할부(${won(base)}/월)로 등록됐어요`);
       } else {
-        Object.assign(t, { type, amount: amt, date: $('#fDate').value, category: $('#fCat').value, memo: $('#fMemo').value, cardId, payment });
+        Object.assign(t, { type, amount: amt, date: $('#fDate').value, category: selCat, memo: $('#fMemo').value.trim() || selCat, cardId, payment });
         if (isNew) S.txs.push(t);
         save(); selDay = t.date; const d = new Date(t.date); cur = new Date(d.getFullYear(), d.getMonth(), 1);
         closeModal(); render(); toast('저장됐어요');
       }
     };
+
+    const flow = bindEnterFlow($('#modalBox'), () => [
+      $('#fAmt'),
+      $('#fMemo'),
+      $('#fCatChips'),
+      type === 'expense' ? $('#fPayChips') : null,
+      $('#fDate'),
+      (isNew && type === 'expense') ? $('#fInstChips') : null,
+      (isNew && type === 'expense' && selInst > 1 && !$('#fFree').checked) ? $('#fRate') : null,
+      (isNew && type === 'expense' && selInst > 1) ? $('#fFirstPay') : null
+    ], () => $('#fSave').click());
+
+    if (isNew) {
+      setTimeout(() => {
+        if (!t.amount) $('#fAmt')?.focus();
+        else if (!t.memo) $('#fMemo')?.focus();
+      }, 60);
+    }
   }
 
   function openCardForm(c) {
     const isNew = !c;
     const DB = window.CARD_DB;
     c = c || { id: uid(), company: '', name: '', nickname: '', emoji: DB.emojis[Math.floor(Math.random() * DB.emojis.length)], color: DB.colors[Math.floor(Math.random() * DB.colors.length)], kind: 'credit', defaultRate: 0.5, rules: {}, minSpend: 0, cap: 0 };
+    let selKind = c.kind || 'credit';
     openModal(`<h3 style="margin-top:0">${isNew ? '🐣 새 카드 등록' : '✏️ 카드 수정'}</h3>
       <div class="box" style="background:var(--surface2);box-shadow:none">
         <b>✨ 카드사/카드 고르면 혜택이 자동으로 채워져요</b>
@@ -494,18 +727,24 @@
       </div>
       <label>카드 이름</label><input id="cName" value="${esc(c.name)}" placeholder="예: iD ON 카드">
       <label>별명 🎤 (음성으로 부를 이름)</label><input id="cNick" value="${esc(c.nickname)}" placeholder="예: 콩이, 삼성이">
-      <div class="chips" id="cNickChips">${DB.nicknames.map(n => `<button type="button" class="chip">${n}</button>`).join('')}</div>
-      <label>캐릭터</label><div class="chips" id="cEmoji">${DB.emojis.map(e => `<button type="button" class="chip em ${e === c.emoji ? 'on' : ''}" data-e="${e}">${e}</button>`).join('')}</div>
-      <label>카드 색상</label><div class="chips" id="cColor">${DB.colors.map(x => `<button type="button" class="sw ${x === c.color ? 'on' : ''}" data-c="${x}" style="background:${x}"></button>`).join('')}</div>
-      <label>종류</label><select id="cKind"><option value="credit" ${c.kind === 'credit' ? 'selected' : ''}>신용카드</option><option value="check" ${c.kind === 'check' ? 'selected' : ''}>체크카드</option></select>
+      <div class="chips" id="cNickChips">${DB.nicknames.map(n => `<button type="button" class="chip" tabindex="-1">${n}</button>`).join('')}</div>
+      <div class="step-box"><label>캐릭터</label><div class="chips" id="cEmoji" data-choice-group>${DB.emojis.map(e => `<button type="button" class="chip em ${e === c.emoji ? 'on' : ''}" data-e="${e}">${e}</button>`).join('')}</div></div>
+      <div class="step-box"><label>카드 색상</label><div class="chips" id="cColor" data-choice-group>${DB.colors.map(x => `<button type="button" class="sw ${x === c.color ? 'on' : ''}" data-c="${x}" style="background:${x}"></button>`).join('')}</div></div>
+      <div class="step-box"><label>종류</label><div class="seg" id="cKindSeg" data-choice-group><button type="button" data-k="credit" class="i ${selKind === 'credit' ? 'on' : ''}">신용카드</button><button type="button" data-k="check" class="i ${selKind === 'check' ? 'on' : ''}">체크카드</button></div></div>
       <label>혜택 (적립/할인율 %, 카테고리별)</label><textarea id="cRules" rows="3" placeholder="기본:0.5, 식비:5, 교통:10, 쇼핑:3">${esc(rulesToStr(c))}</textarea>
-      <label>전월실적 조건 (원, 없으면 0)</label><input id="cMin" type="number" value="${c.minSpend || 0}">
-      <label>월 적립/할인 한도 (원, 없으면 0)</label><input id="cCap" type="number" value="${c.cap || 0}">
-      <label>카드 결제일 (매월 1~28일, 할부 시 이 날짜에 자동 기록 · 없으면 0)</label><input id="cPayDay" type="number" min="0" max="28" value="${c.payDay || 0}">
+      <label>전월실적 조건 (없으면 0)</label><div class="amt-box"><input id="cMin" type="text" inputmode="numeric" value="${fmtMoney(c.minSpend)}" placeholder="0"><span class="unit">원</span></div>
+      <label>월 적립/할인 한도 (없으면 0)</label><div class="amt-box"><input id="cCap" type="text" inputmode="numeric" value="${fmtMoney(c.cap)}" placeholder="0"><span class="unit">원</span></div>
+      <label>카드 결제일 (매월 1~28일, 할부 시 이 날짜에 자동 기록 · 없으면 0)</label><input id="cPayDay" type="number" inputmode="numeric" min="0" max="28" value="${c.payDay || 0}">
       <label style="display:flex;align-items:center;gap:8px;margin-top:16px;color:var(--txt);font-size:14px"><input type="checkbox" id="cDef" style="width:auto" ${c.isDefault ? 'checked' : ''}> ⭐ 기본 카드로 설정 (카드를 말하지 않으면 이 카드로 결제한 걸로 기록)</label>
-      <div class="btns">${isNew ? '' : '<button class="btn red" id="cDel">삭제</button>'}<button class="btn gray" id="cCancel">취소</button><button class="btn" id="cSave">저장</button></div>`);
+      <div class="btns">${isNew ? '' : '<button type="button" class="btn red" id="cDel">삭제</button>'}<button type="button" class="btn gray" id="cCancel">취소</button><button type="button" class="btn" id="cSave">저장</button></div>`);
     $('#cCancel').onclick = closeModal;
-    const kindSel = () => $('#cKind').value;
+    bindMoneyInput($('#cMin'));
+    bindMoneyInput($('#cCap'));
+    const setKindUI = k => {
+      selKind = k;
+      document.querySelectorAll('#cKindSeg button').forEach(b => b.classList.toggle('on', b.dataset.k === selKind));
+    };
+    $('#cKindSeg').onclick = e => { const b = e.target.closest('[data-k]'); if (b) setKindUI(b.dataset.k); };
     const refreshPresets = () => {
       const co = $('#cCompany').value;
       $('#cPreset').innerHTML = '<option value="">직접 입력</option>' + DB.cards.map((p, i) => [p, i]).filter(([p]) => !co || p.company === co).map(([p, i]) => `<option value="${i}">${p.kind === 'check' ? '🏧' : '💳'} ${p.name}</option>`).join('');
@@ -517,86 +756,244 @@
     $('#cName').oninput = refreshPresets;
     $('#cPreset').onchange = () => {
       const p = DB.cards[$('#cPreset').value]; if (!p) { $('#cNote').style.display = 'none'; return; }
-      $('#cName').value = p.name; $('#cKind').value = p.kind; $('#cCompany').value = p.company;
-      $('#cRules').value = rulesToStr(p); $('#cMin').value = p.minSpend; $('#cCap').value = p.cap;
+      $('#cName').value = p.name; setKindUI(p.kind); $('#cCompany').value = p.company;
+      $('#cRules').value = rulesToStr(p); $('#cMin').value = fmtMoney(p.minSpend); $('#cCap').value = fmtMoney(p.cap);
       $('#cNote').style.display = 'block'; $('#cNote').textContent = '📌 ' + p.note + ' (참고용 · ' + DB.checked + ' 기준, 정확한 조건은 카드사에서 확인!)';
       if (!$('#cNick').value) $('#cNick').value = p.company.replace(/카드|뱅크/g, '') + '이';
       toast('혜택을 불러왔어요 ✨');
+      $('#cNick').focus();
     };
-    $('#cNickChips').onclick = e => { if (e.target.classList.contains('chip')) $('#cNick').value = e.target.textContent; };
+    $('#cNickChips').onclick = e => { if (e.target.classList.contains('chip')) { $('#cNick').value = e.target.textContent; $('#cNick').focus(); } };
     $('#cEmoji').onclick = e => { const b = e.target.closest('[data-e]'); if (!b) return; c.emoji = b.dataset.e; document.querySelectorAll('#cEmoji .chip').forEach(x => x.classList.toggle('on', x === b)); };
     $('#cColor').onclick = e => { const b = e.target.closest('[data-c]'); if (!b) return; c.color = b.dataset.c; document.querySelectorAll('#cColor .sw').forEach(x => x.classList.toggle('on', x === b)); };
     if (!isNew) $('#cDel').onclick = () => { if (confirm('카드를 삭제할까요? (기존 내역은 유지)')) { S.cards = S.cards.filter(x => x.id !== c.id); S.txs.forEach(t => { if (t.cardId === c.id) { t.cardId = null; t.payment = 'none'; } }); save(); closeModal(); render(); } };
     $('#cSave').onclick = () => {
-      if (!$('#cName').value.trim()) return toast('카드 이름을 입력해 주세요');
+      if (!$('#cName').value.trim()) { $('#cName').focus(); return toast('카드 이름을 입력해 주세요'); }
       const { rules, def } = parseRules($('#cRules').value);
-      Object.assign(c, { company: $('#cCompany').value, name: $('#cName').value.trim(), nickname: $('#cNick').value.trim(), kind: $('#cKind').value, rules, defaultRate: def, minSpend: +$('#cMin').value || 0, cap: +$('#cCap').value || 0, payDay: Math.min(28, Math.max(0, +$('#cPayDay').value || 0)) });
+      Object.assign(c, { company: $('#cCompany').value, name: $('#cName').value.trim(), nickname: $('#cNick').value.trim(), kind: selKind, rules, defaultRate: def, minSpend: moneyVal($('#cMin')), cap: moneyVal($('#cCap')), payDay: Math.min(28, Math.max(0, +$('#cPayDay').value || 0)) });
       if (isNew) S.cards.push(c);
       c.isDefault = $('#cDef').checked;
       if (c.isDefault) S.cards.forEach(x => { if (x.id !== c.id) x.isDefault = false; });
       else if (S.cards.length === 1) c.isDefault = true;
       save(); closeModal(); render();
     };
+    bindEnterFlow($('#modalBox'), () => [$('#cCompany'), $('#cPreset'), $('#cName'), $('#cNick'), $('#cEmoji'), $('#cColor'), $('#cKindSeg'), $('#cRules'), $('#cMin'), $('#cCap'), $('#cPayDay')], () => $('#cSave').click());
   }
 
-  // ---------- 음성 ----------
+  // ---------- 음성 (앱 네이티브 SpeechRecognizer 우선 + 웹 SpeechRecognition + 실시간 시트) ----------
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null;
-  $('#micBtn').onclick = () => {
-    if (!SR) { toast('이 브라우저는 음성인식을 지원하지 않아요 (Chrome 권장). 문장 입력을 사용해 보세요.'); return openForm(); }
-    if (rec) { rec.finish(); return; }   // 다시 누르면 바로 종료
-    const SILENCE_MS = 3000;             // 말이 멈춘 뒤 이만큼 기다렸다가 종료
-    const r = rec = new SR();
-    r.lang = 'ko-KR'; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
-    let finalText = '', interim = '', done = false, timer = null;
-    const heard = () => (finalText + ' ' + interim).trim();
-    const arm = ms => { clearTimeout(timer); timer = setTimeout(finish, ms); };
-    function finish() {
-      if (done) return; done = true; clearTimeout(timer);
-      try { r.stop(); } catch (e) {}
-      $('#micBtn').classList.remove('rec'); rec = null;
-      const text = heard();
-      if (!text) return toast('잘 못 들었어요 🐣 다시 눌러서 말해 주세요');
-      handleVoice(text);
-    }
-    r.finish = finish;
-    r.onstart = () => { $('#micBtn').classList.add('rec'); toast('듣고 있어요 🎤 천천히 말씀하세요 (다 끝나면 마이크를 다시 눌러요)'); };
-    r.onresult = e => {
-      interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) finalText += ' ' + t; else interim += t;
-      }
-      toast('👂 ' + heard());
-      arm(SILENCE_MS);
-    };
-    r.onerror = e => {
-      if (e.error === 'no-speech' || e.error === 'aborted') return;
-      toast('음성 인식 오류: ' + e.error + (e.error === 'not-allowed' ? ' (마이크 권한을 허용해 주세요)' : ''));
-      done = true; clearTimeout(timer); $('#micBtn').classList.remove('rec'); rec = null;
-    };
-    // 브라우저가 중간에 끊어도(침묵 등) 계속 듣기
-    r.onend = () => { if (!done) { try { r.start(); } catch (e) {} } };
-    arm(12000); // 아무 말도 없으면 12초 뒤 종료
-    r.start();
-  };
+  let activeVoice = null;
 
-  // 한국 시간 기준 현재 시각
   function nowKST() { return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' })); }
 
-  // 음성 결과를 확인창 없이 바로 등록 (금액을 못 알아들었을 때만 입력창)
+  function startVoiceSession(onComplete) {
+    if (activeVoice) { activeVoice.finish(true); return; }
+    const nativeSpeech = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeSpeech;
+    const sheet = $('#voiceSheet');
+    sheet.innerHTML = `<div class="vsheet">
+      <div class="vhead">
+        <span class="vwave" id="vWave"><i></i><i></i><i></i></span>
+        <span id="vStatus" style="flex:1;font-size:13px;font-weight:600">듣고 있어요 · 편하게 끊어서 말씀하세요</span>
+        <button type="button" class="chip" id="vCancel">취소</button>
+      </div>
+      <input id="vInput" enterkeyhint="done" placeholder="예: 어제 삼성이로 쿠팡 충전기 삼만원 샀어">
+      <div class="vtimer"><i id="vBar"></i></div>
+      <div class="vprev" id="vPrev">💬 말씀하시면 금액·날짜·카테고리·카드가 실시간으로 분석돼요</div>
+      <div class="btns" style="margin-top:10px">
+        <button type="button" class="btn gray" id="vEdit">상세 수정</button>
+        <button type="button" class="btn" id="vCommit">바로 등록 ↵</button>
+      </div>
+    </div>`;
+    sheet.classList.remove('hidden');
+    $('#micBtn').classList.add('rec');
+
+    let finalText = '', interim = '', done = false, manualMode = false;
+    let countdownId = null, animId = null;
+    let webRec = null;
+
+    const currentText = () => $('#vInput') ? $('#vInput').value.trim() : (finalText + ' ' + interim).trim();
+    const parseCurrent = txt => Parser.parseTransaction(txt, {
+      cards: S.cards, salary: S.settings.salary, now: nowKST(),
+      defaultCardId: (S.cards.find(c => c.isDefault) || {}).id,
+      keywords: S.keywords, incomeCats: incomeCatNames()
+    });
+
+    function updatePreview(txt) {
+      const el = $('#vPrev'); if (!el) return;
+      if (!txt) {
+        el.innerHTML = '💬 예: "어제 삼성이로 쿠팡 충전기 삼만원" · "월급 들어왔어"';
+        return;
+      }
+      const p = parseCurrent(txt);
+      const c = cardOf(p.cardId);
+      const cardStr = c ? `${c.emoji || '💳'}${esc(c.nickname || c.name)}` : (p.payment === 'cash' ? '💵현금' : '');
+      if (p.ok) {
+        el.innerHTML = `✅ <b>${p.date.slice(5)}</b> · ${ICON[p.category] || '🏷️'} <b>${esc(p.category)}</b>${cardStr ? ' · ' + cardStr : ''}${p.installment > 1 ? ` · <b>${p.installment}개월할부</b>` : ''} · <b class="${p.type === 'income' ? 'inc' : 'exp'}">${p.type === 'income' ? '+' : '-'}${won(p.amount)}</b> · "${esc(p.memo)}"`;
+      } else {
+        el.innerHTML = `👂 인식 중: "${esc(txt)}" <span class="muted">(금액을 말씀해 주세요)</span>`;
+      }
+    }
+
+    function stopTimer() {
+      clearTimeout(countdownId); cancelAnimationFrame(animId);
+      const bar = $('#vBar'); if (bar) bar.style.width = '0%';
+    }
+
+    function armAutoFinish(ms) {
+      if (manualMode || done) return;
+      stopTimer();
+      const start = performance.now();
+      const tick = now => {
+        if (done || manualMode) return;
+        const pct = Math.min(100, ((now - start) / ms) * 100);
+        const bar = $('#vBar'); if (bar) bar.style.width = pct + '%';
+        if (pct < 100) animId = requestAnimationFrame(tick);
+      };
+      animId = requestAnimationFrame(tick);
+      countdownId = setTimeout(() => finish(true), ms);
+    }
+
+    function stopEngines() {
+      if (webRec) { try { webRec.stop(); } catch (e) {} webRec = null; }
+      if (nativeSpeech) {
+        nativeSpeech.stop().catch(() => {});
+        if (nativeSpeech.removeAllListeners) nativeSpeech.removeAllListeners().catch(() => {});
+      }
+    }
+
+    function finish(commit) {
+      if (done) return;
+      done = true;
+      stopTimer();
+      stopEngines();
+      const text = currentText();
+      sheet.classList.add('hidden');
+      $('#micBtn').classList.remove('rec');
+      activeVoice = null;
+      if (!commit) return;
+      if (!text) return toast('잘 못 들었어요 🐣 다시 눌러서 말씀해 주세요');
+      (onComplete || handleVoice)(text);
+    }
+
+    activeVoice = { finish };
+    sheet.onclick = e => { if (e.target === sheet) finish(false); };
+    $('#vCancel').onclick = () => finish(false);
+    $('#vCommit').onclick = () => finish(true);
+    $('#vEdit').onclick = () => {
+      const txt = currentText();
+      const p = txt ? parseCurrent(txt) : null;
+      finish(false);
+      openForm(null, p);
+    };
+    $('#vInput').onfocus = () => {
+      // 사용자가 텍스트칸을 직접 눌러 고칠 때는 자동 종료를 멈추고 편하게 수정하게 함
+      manualMode = true;
+      stopTimer();
+      stopEngines();
+      $('#vWave')?.classList.add('paused');
+      const st = $('#vStatus'); if (st) st.textContent = '직접 다듬는 중 · 엔터를 누르면 바로 등록돼요';
+    };
+    $('#vInput').oninput = e => updatePreview(e.target.value);
+    $('#vInput').onkeydown = e => {
+      if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); finish(true); }
+    };
+
+    const onSpeechUpdate = () => {
+      if (done || manualMode) return;
+      const txt = (finalText + ' ' + interim).replace(/\s+/g, ' ').trim();
+      const inp = $('#vInput'); if (inp) inp.value = txt;
+      updatePreview(txt);
+      const p = parseCurrent(txt);
+      // 금액까지 인식됐으면 3초 뒤 자동 등록, 아직 금액 말하기 전(뜸 들이는 중)이면 5초 여유!
+      armAutoFinish(p.ok ? 3000 : 5000);
+    };
+
+    if (nativeSpeech) {
+      nativeSpeech.addListener('partial', ev => { interim = ev.text || ''; onSpeechUpdate(); });
+      nativeSpeech.addListener('segment', ev => {
+        if (ev.text) finalText = (finalText + ' ' + ev.text).trim();
+        interim = '';
+        onSpeechUpdate();
+      });
+      nativeSpeech.addListener('speechError', ev => {
+        if (done || manualMode) return;
+        const st = $('#vStatus');
+        if (st && !currentText()) st.textContent = (ev && ev.message) || '말씀이 들리지 않았어요 · 직접 입력도 가능해요';
+      });
+      nativeSpeech.start({ lang: 'ko-KR' }).catch(err => {
+        const st = $('#vStatus');
+        if (st) st.textContent = (err && err.message) || '마이크를 시작할 수 없어요 · 아래 칸에 적어주세요';
+        $('#vWave')?.classList.add('paused');
+        setTimeout(() => $('#vInput')?.focus(), 60);
+      });
+      armAutoFinish(12000);
+      return;
+    }
+
+    if (SR) {
+      const r = webRec = new SR();
+      r.lang = 'ko-KR'; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+      r.onresult = e => {
+        interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const seg = e.results[i][0].transcript;
+          if (e.results[i].isFinal) finalText += ' ' + seg; else interim += seg;
+        }
+        onSpeechUpdate();
+      };
+      r.onerror = e => {
+        if (e.error === 'no-speech' || e.error === 'aborted') return;
+        const st = $('#vStatus');
+        if (st) st.textContent = '마이크 오류(' + e.error + ') · 아래 칸에 직접 입력할 수 있어요';
+        $('#vWave')?.classList.add('paused');
+      };
+      r.onend = () => { if (!done && !manualMode && webRec) { try { r.start(); } catch (e) {} } };
+      try { r.start(); armAutoFinish(12000); } catch (e) {}
+      return;
+    }
+
+    // 음성 API 미지원 브라우저: 키보드 음성입력/타이핑으로 바로 유도
+    manualMode = true;
+    $('#vWave')?.classList.add('paused');
+    $('#vStatus').textContent = '자판의 마이크 버튼이나 타이핑 후 엔터를 눌러주세요';
+    setTimeout(() => $('#vInput')?.focus(), 60);
+  }
+
+  $('#micBtn').onclick = () => startVoiceSession(handleVoice);
+
+  // 음성 결과를 확인창 없이 바로 등록 (할부 음성도 자동 분할 지원, 금액 미인식 시만 입력창)
   function handleVoice(text) {
     const p = Parser.parseTransaction(text, { cards: S.cards, salary: S.settings.salary, now: nowKST(), defaultCardId: (S.cards.find(c => c.isDefault) || {}).id, keywords: S.keywords, incomeCats: incomeCatNames() });
     if (!p.ok) { toast('금액을 못 알아들었어요: ' + text); return openForm(null, p); }
-    const tx = { id: uid(), type: p.type, amount: p.amount, date: p.date, category: p.category, memo: p.memo, cardId: p.cardId, payment: p.payment };
-    S.txs.push(tx); save();
-    selDay = tx.date; const d = new Date(tx.date); cur = new Date(d.getFullYear(), d.getMonth(), 1);
+    const c = cardOf(p.cardId);
+    const n = (p.type === 'expense' && p.installment > 1) ? p.installment : 1;
+    let undoFn;
+
+    if (n > 1) {
+      const base = Math.floor(p.amount / n), rem = p.amount - base * n;
+      const fp = firstPayDate(p.date, c && c.payDay);
+      const gid = uid();
+      for (let i = 0; i < n; i++) {
+        S.txs.push({
+          id: uid(), type: 'expense', amount: i === 0 ? base + rem : base,
+          date: addMonths(fp, i), category: p.category,
+          memo: `[${i + 1}/${n}] ${p.memo}`, cardId: p.cardId, payment: p.payment,
+          installmentGroup: gid, installmentInfo: `${i + 1}/${n}`
+        });
+      }
+      save(); selDay = fp; const d = new Date(fp); cur = new Date(d.getFullYear(), d.getMonth(), 1);
+      undoFn = () => { S.txs = S.txs.filter(x => x.installmentGroup !== gid); };
+    } else {
+      const tx = { id: uid(), type: p.type, amount: p.amount, date: p.date, category: p.category, memo: p.memo, cardId: p.cardId, payment: p.payment };
+      S.txs.push(tx); save();
+      selDay = tx.date; const d = new Date(tx.date); cur = new Date(d.getFullYear(), d.getMonth(), 1);
+      undoFn = () => { S.txs = S.txs.filter(x => x.id !== tx.id); };
+    }
     render();
-    const c = cardOf(tx.cardId);
     const t = $('#toast');
-    t.innerHTML = `✅ ${tx.date.slice(5)} · ${esc(tx.memo)} · ${tx.category} · ${tx.type === 'income' ? '+' : '-'}${won(tx.amount)}${c ? ' · ' + (c.emoji || '💳') + esc(c.nickname || c.name) : ''}<br><small>"${esc(text)}"</small> <button id="undoV" class="chip">되돌리기</button>`;
+    t.innerHTML = `✅ ${p.date.slice(5)} · ${esc(p.memo)} · ${p.category}${n > 1 ? ` (${n}개월)` : ''} · ${p.type === 'income' ? '+' : '-'}${won(p.amount)}${c ? ' · ' + (c.emoji || '💳') + esc(c.nickname || c.name) : ''}<br><small>"${esc(text)}"</small> <button id="undoV" class="chip">되돌리기</button>`;
     t.classList.remove('hidden'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.add('hidden'), 7000);
-    $('#undoV').onclick = () => { S.txs = S.txs.filter(x => x.id !== tx.id); save(); t.classList.add('hidden'); render(); };
+    $('#undoV').onclick = () => { undoFn(); save(); t.classList.add('hidden'); render(); };
   }
   $('#addBtn').onclick = () => openForm();
 
@@ -802,7 +1199,7 @@
         </div>
         <div style="display:flex;gap:8px">
           <input class="bMemo" data-i="${i}" value="${esc(it.memo)}" placeholder="내용" style="flex:1;padding:6px 8px;font-size:14px">
-          <input type="number" class="bAmt" data-i="${i}" value="${it.amount}" style="width:110px;padding:6px 8px;font-size:14px;text-align:right">
+          <input type="text" inputmode="numeric" class="bAmt" data-i="${i}" value="${fmtMoney(it.amount)}" style="width:110px;padding:6px 8px;font-size:14px;text-align:right">
         </div>
       </div>`).join('');
     openModal(`<h3 style="margin-top:0">📋 이용내역 ${items.length}건 한 번에 등록</h3>
@@ -810,6 +1207,7 @@
       <label style="margin-top:0">공통 결제수단</label><select id="bPay" style="margin-bottom:10px">${cardOpts}</select>
       ${rows}
       <div class="btns"><button class="btn gray" id="bCancel">취소</button><button class="btn" id="bSave">${items.length}건 저장</button></div>`);
+    $('#modalBox').querySelectorAll('.bAmt').forEach(el => bindMoneyInput(el));
     $('#bCancel').onclick = closeModal;
     $('#bSave').onclick = () => {
       const pay = $('#bPay').value;
@@ -817,7 +1215,7 @@
       let added = 0, lastDate = selDay;
       items.forEach((it, i) => {
         if (!$(`.bChk[data-i="${i}"]`).checked) return;
-        const amt = +$(`.bAmt[data-i="${i}"]`).value; if (!(amt > 0)) return;
+        const amt = moneyVal($(`.bAmt[data-i="${i}"]`)); if (!(amt > 0)) return;
         const date = $(`.bDate[data-i="${i}"]`).value || selDay;
         const cat = $(`.bCat[data-i="${i}"]`).value;
         const memo = $(`.bMemo[data-i="${i}"]`).value.trim() || cat;
@@ -828,6 +1226,7 @@
       save(); selDay = lastDate; const d = new Date(lastDate); cur = new Date(d.getFullYear(), d.getMonth(), 1);
       closeModal(); render(); toast(`${added}건이 등록됐어요 ✨`);
     };
+    bindEnterFlow($('#modalBox'), () => [$('#bPay'), ...$('#modalBox').querySelectorAll('.bDate, .bCat, .bMemo, .bAmt')], () => $('#bSave').click());
   }
   $('#photoBtn').onclick = () => $('#receiptFile').click();
   $('#receiptFile').onchange = e => {
@@ -900,6 +1299,8 @@
         closeModal(); render(); toast(`${d.user.username}님 환영해요 ✨`);
       } catch (e) { toast(e.message); }
     };
+    bindEnterFlow($('#modalBox'), () => [$('#aId'), $('#aPw'), $('#aSrv')], () => $('#aGo').click());
+    setTimeout(() => $('#aId')?.focus(), 60);
   }
   $('#authBtn').onclick = openAuthModal;
   if (AUTH.token && getServerUrl()) syncFromServer().catch(() => {});

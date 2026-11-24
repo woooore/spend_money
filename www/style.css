@@ -107,16 +107,36 @@ nav button.on{color:var(--accent);background:var(--accent-soft)}
 
 /* ── 모달 / 토스트 ─────────────────────────── */
 #modal{position:fixed;inset:0;background:rgba(20,10,14,.5);z-index:20;display:flex;align-items:flex-end;justify-content:center}
-#modal.hidden,#toast.hidden{display:none}
+#modal.hidden,#toast.hidden,#voiceSheet.hidden{display:none}
 #modalBox{background:var(--bg);width:100%;max-width:720px;border-radius:var(--r-l) var(--r-l) 0 0;padding:var(--s5) var(--s4) var(--s4);max-height:92vh;overflow:auto;animation:up .22s ease-out}
 @keyframes up{from{transform:translateY(32px);opacity:.4}}
 #toast{position:fixed;bottom:132px;left:50%;transform:translateX(-50%);background:var(--txt);color:var(--bg);padding:var(--s3) var(--s4);border-radius:var(--r-m);z-index:30;font-size:13px;max-width:92%;box-shadow:var(--shadow)}
 #toast .chip{margin-left:var(--s2);background:transparent;color:var(--bg);border-color:var(--faint)}
 
-/* ── 폼 ────────────────────────────────────── */
+/* ── 실시간 음성 입력 시트 ─────────────────── */
+#voiceSheet{position:fixed;inset:0;background:rgba(20,10,14,.45);z-index:25;display:flex;align-items:flex-end;justify-content:center}
+.vsheet{background:var(--surface);width:100%;max-width:720px;border-radius:var(--r-l) var(--r-l) 0 0;padding:var(--s4);box-shadow:var(--shadow);animation:up .2s ease-out}
+.vhead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.vwave{display:inline-flex;align-items:center;gap:3px;height:20px;padding:0 8px;border-radius:12px;background:var(--accent-soft)}
+.vwave i{display:block;width:3px;height:8px;border-radius:2px;background:var(--accent);animation:wave .9s ease-in-out infinite}
+.vwave i:nth-child(2){animation-delay:.15s;height:14px}
+.vwave i:nth-child(3){animation-delay:.3s;height:10px}
+.vwave.paused i{animation:none;height:6px;opacity:.45}
+@keyframes wave{0%,100%{transform:scaleY(.55)}50%{transform:scaleY(1.35)}}
+.vtimer{height:4px;border-radius:3px;background:var(--surface2);overflow:hidden;margin:10px 0}
+.vtimer i{display:block;height:100%;width:0%;background:var(--accent);transition:width .1s linear}
+.vprev{padding:10px 12px;border-radius:var(--r-s);background:var(--surface2);font-size:13px;line-height:1.45}
+
+/* ── 폼 & 엔터 단계 포커스 ─────────────────── */
 label{display:block;font-size:12px;color:var(--sub);margin:var(--s4) 0 var(--s1);font-weight:500}
 input,select,textarea{width:100%;padding:12px;border:1px solid var(--line);border-radius:var(--r-s);font-size:15px;font-family:inherit;background:var(--surface);color:var(--txt)}
 input:focus,select:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%,transparent);border-color:var(--accent)}
+.amt-box{position:relative;display:flex;align-items:center}
+.amt-box input{padding-right:36px;font-size:18px;font-weight:650}
+.amt-box .unit{position:absolute;right:14px;color:var(--sub);font-weight:600;pointer-events:none}
+.step-box{border-radius:var(--r-m);transition:box-shadow .18s,background-color .18s}
+.step-box.step-active{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 55%,transparent);background:color-mix(in srgb,var(--accent-soft) 35%,transparent);padding:6px;margin:-6px}
+.chip:focus-visible,.sw:focus-visible,.seg button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .btn{padding:12px 14px;border:0;border-radius:var(--r-s);background:var(--accent);color:var(--accent-ink);font-size:15px;font-weight:600;cursor:pointer;font-family:inherit}
 .btn:active{opacity:.85}
 .btn.gray{background:var(--surface2);color:var(--txt)}
