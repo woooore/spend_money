@@ -137,7 +137,7 @@
     if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
   }
   applyTheme();
-  S.customCats ||= []; S.keywords ||= {};
+  S.customCats ||= []; S.keywords ||= {}; S.recurring ||= []; S.recurringSkips ||= [];
   let AUTH = loadAuth();
   function loadAuth() {
     try { return JSON.parse(localStorage.getItem(AUTH_KEY)) || {}; } catch (e) { return {}; }
@@ -198,9 +198,60 @@
     return out;
   }
 
+  // ---------- 매달 고정비 자동 생성 엔진 ----------
+  function resolveRecurringDay(r) {
+    if (r.dayMode === 'cardPayDay') {
+      const c = cardOf(r.cardId);
+      if (c && c.payDay >= 1 && c.payDay <= 28) return c.payDay;
+    }
+    return Math.min(31, Math.max(1, +r.day || 1));
+  }
+  function recurringDayLabel(r) {
+    if (r.dayMode === 'cardPayDay') {
+      const c = cardOf(r.cardId);
+      if (c && c.payDay >= 1 && c.payDay <= 28) return `카드결제일(매월 ${c.payDay}일)`;
+      return `카드결제일(미설정→매월 ${r.day || 1}일)`;
+    }
+    return (+r.day >= 31) ? '매월 말일' : `매월 ${r.day || 1}일`;
+  }
+  function ensureRecurringForMonth(ym) {
+    if (!S.recurring || !S.recurring.length) return false;
+    const [y, m] = ym.split('-').map(Number);
+    const lastDay = new Date(y, m, 0).getDate();
+    let changed = false;
+    for (const r of S.recurring) {
+      if (r.active === false) continue;
+      if (r.startMonth && ym < r.startMonth) continue;
+      const skipKey = r.id + ':' + ym;
+      if ((S.recurringSkips || []).includes(skipKey)) continue;
+      if (S.txs.some(t => t.recurringId === r.id && t.recurringMonth === ym)) continue;
+      const day = Math.min(lastDay, resolveRecurringDay(r));
+      const date = `${ym}-${String(day).padStart(2, '0')}`;
+      S.txs.push({
+        id: uid(), type: r.type || 'expense', amount: r.amount, date,
+        category: r.category, memo: r.memo, cardId: r.cardId || null,
+        payment: r.cardId ? 'card' : (r.payment || 'none'),
+        recurringId: r.id, recurringMonth: ym
+      });
+      changed = true;
+    }
+    return changed;
+  }
+  function ensureRecurringAhead() {
+    let changed = false;
+    const base = nowKST();
+    for (let i = 0; i <= 3; i++) {
+      const d = new Date(base.getFullYear(), base.getMonth() + i, 1);
+      if (ensureRecurringForMonth(mKey(d))) changed = true;
+    }
+    if (ensureRecurringForMonth(curKey())) changed = true;
+    if (changed) save();
+  }
+
   // ---------- 렌더 ----------
   function render() {
-    S.customCats ||= []; S.keywords ||= {}; refreshCats();
+    S.customCats ||= []; S.keywords ||= {}; S.recurring ||= []; S.recurringSkips ||= []; refreshCats();
+    ensureRecurringAhead();
     const ab = $('#authBtn');
     if (ab) {
       ab.textContent = AUTH.user ? '👤 ' + AUTH.user.username : '로그인';
@@ -220,7 +271,7 @@
     const c = cardOf(t.cardId);
     const pay = c ? (c.emoji || '💳') + (c.nickname || c.name) : (t.payment === 'cash' ? '💵현금' : '');
     return `<div class="tx" data-id="${t.id}"><div class="ic">${ICON[t.category] || '💸'}</div>
-      <div class="mid"><div>${esc(t.memo || t.category)}</div><small>${t.category}${pay ? ' · ' + esc(pay) : ''}${t.date ? ' · ' + t.date.slice(5) : ''}</small></div>
+      <div class="mid"><div>${t.recurringId ? '<span class="badge" style="margin-left:0;margin-right:4px">🔁고정</span>' : ''}${esc(t.memo || t.category)}</div><small>${t.category}${pay ? ' · ' + esc(pay) : ''}${t.date ? ' · ' + t.date.slice(5) : ''}</small></div>
       <div class="amt ${t.type === 'income' ? 'inc' : 'exp'}">${t.type === 'income' ? '+' : '-'}${won(t.amount)}</div></div>`;
   }
   function bindTx(root) { root.querySelectorAll('.tx').forEach(e => e.onclick = () => openForm(S.txs.find(t => t.id === e.dataset.id))); }
@@ -248,21 +299,34 @@
 
   function renderList() {
     const el = $('#tab-list');
+    // 검색창을 DOM에 고정 유지해야 한글 IME 조합(자모 결합)이 끊기지 않음
+    if (!$('#q', el)) {
+      el.innerHTML = `<input id="q" enterkeyhint="search" placeholder="🔍 검색 (메모/카테고리)" value="${esc(query)}"><div id="qResults"></div>`;
+      const qEl = $('#q', el);
+      qEl.oninput = e => { query = e.target.value; renderListRows(); };
+      qEl.onkeydown = e => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); qEl.blur(); } };
+    }
+    renderListRows();
+  }
+  function renderListRows() {
+    const box = $('#qResults');
+    if (!box) return;
     let txs = monthTxs(curKey()).sort((a, b) => b.date.localeCompare(a.date));
-    if (query) txs = txs.filter(t => (t.memo + t.category).includes(query));
-    let h = `<input id="q" placeholder="🔍 검색 (메모/카테고리)" value="${esc(query)}">`;
-    if (!txs.length) h += '<div class="empty">내역이 없어요</div>';
+    const q = query.trim().toLowerCase();
+    if (q) txs = txs.filter(t => (t.memo + ' ' + t.category).toLowerCase().includes(q));
+    let h = '';
+    if (!txs.length) h = '<div class="empty">내역이 없어요</div>';
     let last = '';
     for (const t of txs) {
-      if (t.date !== last) { last = t.date; const day = S.txs.filter(x => x.date === t.date);
-        h += `<div class="dayhdr"><span>${t.date.slice(5)} (${'일월화수목금토'[new Date(t.date).getDay()]})</span><span>-${won(day.filter(x => x.type === 'expense').reduce((a, x) => a + x.amount, 0))}</span></div>`; }
+      if (t.date !== last) {
+        last = t.date;
+        const day = S.txs.filter(x => x.date === t.date);
+        h += `<div class="dayhdr"><span>${t.date.slice(5)} (${'일월화수목금토'[new Date(t.date).getDay()]})</span><span>-${won(day.filter(x => x.type === 'expense').reduce((a, x) => a + x.amount, 0))}</span></div>`;
+      }
       h += `<div class="box" style="padding:0 12px;margin-bottom:4px">${txRow(t)}</div>`;
     }
-    el.innerHTML = `<input id="q" enterkeyhint="search" placeholder="🔍 검색 (메모/카테고리)" value="${esc(query)}">` + h.slice(h.indexOf('>') + 1);
-    bindTx(el);
-    const qEl = $('#q');
-    qEl.oninput = e => { query = e.target.value; const pos = e.target.selectionStart; renderList(); const q = $('#q'); q.focus(); q.setSelectionRange(pos, pos); };
-    qEl.onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); qEl.blur(); } };
+    box.innerHTML = h;
+    bindTx(box);
   }
 
   function renderStats() {
@@ -421,9 +485,28 @@
   function renderSettings() {
     const el = $('#tab-settings');
     const srv = getServerUrl();
+    const recTotal = (S.recurring || []).filter(r => r.active !== false && r.type !== 'income').reduce((a, r) => a + (+r.amount || 0), 0);
+    const recListHtml = (S.recurring && S.recurring.length)
+      ? S.recurring.map(r => {
+          const c = cardOf(r.cardId);
+          const pay = c ? `${c.emoji || '💳'}${esc(c.nickname || c.name)}` : (r.payment === 'cash' ? '💵현금' : '');
+          return `<div class="tx" data-rec="${r.id}" style="${r.active === false ? 'opacity:.5' : ''}">
+            <div class="ic">${ICON[r.category] || '🔁'}</div>
+            <div class="mid"><div>${esc(r.memo || r.category)}${r.active === false ? '<span class="badge">일시중지</span>' : ''}</div>
+              <small>${recurringDayLabel(r)}${pay ? ' · ' + pay : ''} · ${esc(r.category)}</small></div>
+            <div class="amt ${r.type === 'income' ? 'inc' : 'exp'}">${r.type === 'income' ? '+' : '-'}${won(r.amount)}</div>
+          </div>`;
+        }).join('')
+      : '<div class="empty">등록된 고정비가 없어요 · 예: "매달 보험비 96800원 지출있어"</div>';
+
     el.innerHTML = `<div class="box"><h3>👤 계정 · 서버 동기화</h3>
       <p class="muted" style="margin:0 0 8px">${AUTH.user ? `<b>${esc(AUTH.user.username)}</b>님으로 로그인 중 (자동 동기화)` : '로그인하면 휴대폰·PC 어디서나 내역이 동기화되고, API 키 없이 AI 영수증 인식을 쓸 수 있어요.'}</p>
       <div class="btns" style="margin-top:8px"><button class="btn" id="openAuth">${AUTH.user ? '계정 관리 / 동기화' : '로그인 · 회원가입'}</button></div></div>
+    <div class="box"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="margin:0">🔁 매달 고정비 ${recTotal ? `<small class="muted" style="font-weight:500">(월 ${won(recTotal)})</small>` : ''}</h3>
+        <button class="chip" id="addRec">+ 고정비 추가</button></div>
+      <p class="muted" style="margin:0 0 8px">OTT·보험·월세 등 매달 나가는 돈을 등록하면 매월 지정일(또는 카드 결제일)에 달력에 미리 자동 기록돼요.</p>
+      ${recListHtml}</div>
     <div class="box"><h3>화면 모드</h3><div class="seg" id="themeSeg">
       <button data-th="auto" class="${!S.settings.theme || S.settings.theme === 'auto' ? 'on i' : ''}">자동</button>
       <button data-th="light" class="${S.settings.theme === 'light' ? 'on i' : ''}">라이트</button>
@@ -445,6 +528,11 @@
       <input type="file" id="file" accept=".json" style="display:none"></div>
     <div class="box"><h3>🎤 음성 입력 예시</h3><p class="muted">"쿠팡에서 오늘 삼성이로 삼만원짜리 충전기 샀어"<br>"어제 롯데로 점심 만이천원"<br>"월급 들어왔어" (설정한 월급 자동 입력)<br>"용돈 오만원 받았어"<br>카드 별명은 [카드혜택] 탭에서 등록하세요.</p></div>`;
     $('#openAuth').onclick = openAuthModal;
+    $('#addRec').onclick = () => openForm(null, { isRecurring: true, recurringDayMode: S.cards.some(c => c.isDefault && c.payDay) ? 'cardPayDay' : 'custom', recurringDay: 1 });
+    el.querySelectorAll('[data-rec]').forEach(x => x.onclick = () => {
+      const r = (S.recurring || []).find(item => item.id === x.dataset.rec);
+      if (r) openRecurringForm(r);
+    });
     $('#addCat').onclick = () => openCatForm();
     el.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => openCatForm(b.dataset.cat));
     $('#themeSeg').onclick = e => { const b = e.target.closest('[data-th]'); if (!b) return; S.settings.theme = b.dataset.th; applyTheme(); save(); renderSettings(); };
@@ -518,6 +606,22 @@
         <button type="button" class="chip dquick" data-off="-2" tabindex="-1">그제</button>
       </div>
 
+      ${isNew ? `<div class="step-box" style="margin-top:12px">
+        <label style="display:flex;align-items:center;gap:8px;margin:0;color:var(--txt);font-size:14px">
+          <input type="checkbox" id="fRec" style="width:auto" ${t.isRecurring ? 'checked' : ''}> 🔁 매달 고정비로 자동 등록 (달력에 미리 기록)
+        </label>
+        <div id="recDetail" style="display:none;margin-top:10px;padding:10px;border-radius:12px;background:var(--surface2)">
+          <div class="seg mini" id="recModeSeg" style="margin-bottom:8px">
+            <button type="button" data-rm="custom" class="${t.recurringDayMode !== 'cardPayDay' ? 'on i' : ''}">날짜 직접 지정</button>
+            <button type="button" data-rm="cardPayDay" class="${t.recurringDayMode === 'cardPayDay' ? 'on i' : ''}">카드 결제일</button>
+          </div>
+          <div id="recDayBox">
+            <label style="margin-top:0">매월 몇 일 (31 입력 시 말일)</label>
+            <input id="fRecDay" type="number" inputmode="numeric" min="1" max="31" value="${t.recurringDay || +t.date.slice(8) || 1}">
+          </div>
+          <div id="recPayHint" class="note" style="display:none;margin-top:4px"></div>
+        </div>
+      </div>` : ''}
       ${isNew ? `<div id="instWrap" class="step-box">
         <label>할부</label>
         <div class="chips" id="fInstChips" data-choice-group>${instOpts.map(n => `<button type="button" class="chip ${n === initInst ? 'on' : ''}" data-inst="${n}">${n === 1 ? '일시불' : n + '개월'}</button>`).join('')}</div>
@@ -620,6 +724,32 @@
     });
 
     if (isNew) {
+      let recMode = t.recurringDayMode === 'cardPayDay' ? 'cardPayDay' : 'custom';
+      const syncRecUI = () => {
+        const on = $('#fRec').checked;
+        $('#recDetail').style.display = on ? 'block' : 'none';
+        if (!on) return;
+        document.querySelectorAll('#recModeSeg button').forEach(b => b.classList.toggle('on', b.dataset.rm === recMode));
+        const c = cardOf(selPay);
+        const hasPayDay = !!(c && c.payDay >= 1 && c.payDay <= 28);
+        $('#recDayBox').style.display = (recMode === 'custom' || !hasPayDay) ? 'block' : 'none';
+        const hint = $('#recPayHint');
+        if (recMode === 'cardPayDay') {
+          hint.style.display = 'block';
+          hint.textContent = hasPayDay
+            ? `💳 ${c.nickname || c.name} 결제일(매월 ${c.payDay}일)에 자동 기록돼요`
+            : '⚠️ 선택한 카드의 결제일이 설정되지 않았어요. 아래 날짜를 쓰거나 [카드] 탭에서 결제일을 입력해 주세요.';
+        } else {
+          hint.style.display = 'none';
+        }
+      };
+      syncRecUI();
+      $('#fRec').onchange = syncRecUI;
+      $('#recModeSeg').onclick = e => {
+        const b = e.target.closest('[data-rm]'); if (!b) return;
+        recMode = b.dataset.rm; syncRecUI();
+      };
+      $('#fPayChips').addEventListener('click', () => setTimeout(syncRecUI, 0));
       updateInst(false);
       $('#fPhoto').onclick = () => { closeModal(); $('#receiptFile').click(); };
       $('#fVoice').onclick = () => {
@@ -659,6 +789,11 @@
     });
     $('#fCancel').onclick = closeModal;
     if (!isNew) $('#fDel').onclick = () => {
+      if (t.recurringId && t.recurringMonth) {
+        S.recurringSkips ||= [];
+        const sk = t.recurringId + ':' + t.recurringMonth;
+        if (!S.recurringSkips.includes(sk)) S.recurringSkips.push(sk);
+      }
       if (t.installmentGroup) {
         const cnt = S.txs.filter(x => x.installmentGroup === t.installmentGroup).length;
         if (cnt > 1 && confirm(`같은 할부 내역이 ${cnt}건 있어요.\n확인: ${cnt}건 모두 삭제 / 취소: 이 회차만 삭제`)) {
@@ -670,6 +805,23 @@
     $('#fSave').onclick = () => {
       const amt = moneyVal($('#fAmt')); if (!(amt > 0)) { $('#fAmt').focus(); return toast('금액을 입력해 주세요'); }
       const cardId = cardOf(selPay) ? selPay : null, payment = cardId ? 'card' : selPay;
+      const isRec = isNew && $('#fRec') && $('#fRec').checked;
+      if (isRec) {
+        const rm = document.querySelector('#recModeSeg .on')?.dataset.rm || 'custom';
+        const rDay = Math.min(31, Math.max(1, +$('#fRecDay').value || 1));
+        const startMonth = ($('#fDate').value || selDay).slice(0, 7);
+        const rec = {
+          id: uid(), type, amount: amt, memo: $('#fMemo').value.trim() || selCat,
+          category: selCat, cardId, payment, dayMode: rm, day: rDay, active: true, startMonth
+        };
+        S.recurring ||= [];
+        S.recurring.push(rec);
+        ensureRecurringAhead();
+        save(); selDay = `${startMonth}-${String(Math.min(28, resolveRecurringDay(rec))).padStart(2, '0')}`;
+        const d = new Date(selDay); cur = new Date(d.getFullYear(), d.getMonth(), 1);
+        closeModal(); render();
+        return toast(`🔁 매달 고정비로 등록됐어요 (${recurringDayLabel(rec)})`);
+      }
       const n = (isNew && type === 'expense') ? (selInst || 1) : 1;
       if (n > 1) {
         const free = $('#fFree').checked;
@@ -713,6 +865,76 @@
         else if (!t.memo) $('#fMemo')?.focus();
       }, 60);
     }
+  }
+
+  function openRecurringForm(r) {
+    const payOpts = [
+      ...S.cards.map(c => ({ v: c.id, lb: `${c.emoji || '💳'} ${c.nickname || c.name}` })),
+      { v: 'cash', lb: '💵 현금' },
+      { v: 'none', lb: '선택 안 함' }
+    ];
+    let rm = r.dayMode === 'cardPayDay' ? 'cardPayDay' : 'custom';
+    const cats = r.type === 'income' ? INC_CATS : EXP_CATS;
+    openModal(`<h3 style="margin-top:0">🔁 고정비 수정</h3>
+      <label>내용 (메모)</label><input id="rMemo" value="${esc(r.memo)}">
+      <label>금액</label><div class="amt-box"><input id="rAmt" type="text" inputmode="numeric" value="${fmtMoney(r.amount)}"><span class="unit">원</span></div>
+      <label>카테고리</label><select id="rCat">${cats.map(c => `<option ${c === r.category ? 'selected' : ''}>${c}</option>`).join('')}</select>
+      <label>결제수단</label><select id="rPay">${payOpts.map(o => `<option value="${esc(o.v)}" ${(r.cardId ? r.cardId : (r.payment || 'none')) === o.v ? 'selected' : ''}>${esc(o.lb)}</option>`).join('')}</select>
+      <label>매달 기록 날짜</label>
+      <div class="seg mini" id="rModeSeg" style="margin-bottom:8px">
+        <button type="button" data-rm="custom" class="${rm === 'custom' ? 'on i' : ''}">날짜 직접 지정</button>
+        <button type="button" data-rm="cardPayDay" class="${rm === 'cardPayDay' ? 'on i' : ''}">카드 결제일</button>
+      </div>
+      <div id="rDayWrap"><input id="rDay" type="number" inputmode="numeric" min="1" max="31" value="${r.day || 1}" placeholder="1~31 (31=말일)"></div>
+      <div id="rPayHint" class="note" style="display:none;margin-top:4px"></div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:14px;color:var(--txt);font-size:14px">
+        <input type="checkbox" id="rActive" style="width:auto" ${r.active !== false ? 'checked' : ''}> 자동 등록 활성화
+      </label>
+      <div class="btns"><button type="button" class="btn red" id="rDel">삭제</button><button type="button" class="btn gray" id="rCancel">취소</button><button type="button" class="btn" id="rSave">저장</button></div>`);
+    bindMoneyInput($('#rAmt'));
+    const syncR = () => {
+      document.querySelectorAll('#rModeSeg button').forEach(b => b.classList.toggle('on', b.dataset.rm === rm));
+      const c = cardOf($('#rPay').value);
+      const hasPay = !!(c && c.payDay >= 1 && c.payDay <= 28);
+      $('#rDayWrap').style.display = (rm === 'custom' || !hasPay) ? 'block' : 'none';
+      const hint = $('#rPayHint');
+      if (rm === 'cardPayDay') {
+        hint.style.display = 'block';
+        hint.textContent = hasPay ? `💳 ${c.nickname || c.name} 결제일(매월 ${c.payDay}일)에 기록돼요` : '⚠️ 카드 결제일이 없어 아래 날짜를 사용해요';
+      } else hint.style.display = 'none';
+    };
+    syncR();
+    $('#rModeSeg').onclick = e => { const b = e.target.closest('[data-rm]'); if (!b) return; rm = b.dataset.rm; syncR(); };
+    $('#rPay').onchange = syncR;
+    $('#rCancel').onclick = closeModal;
+    $('#rDel').onclick = () => {
+      const curYm = mKey(nowKST());
+      S.recurring = S.recurring.filter(x => x.id !== r.id);
+      if (confirm('이미 달력에 미리 생성된 이번 달·다음 달 고정비 내역도 함께 지울까요?')) {
+        S.txs = S.txs.filter(t => !(t.recurringId === r.id && (t.recurringMonth || '') >= curYm));
+      }
+      save(); closeModal(); render(); toast('고정비를 삭제했어요');
+    };
+    $('#rSave').onclick = () => {
+      const amt = moneyVal($('#rAmt')); if (!(amt > 0)) return toast('금액을 입력해 주세요');
+      const pay = $('#rPay').value;
+      const cardId = cardOf(pay) ? pay : null;
+      Object.assign(r, {
+        memo: $('#rMemo').value.trim() || $('#rCat').value,
+        amount: amt,
+        category: $('#rCat').value,
+        cardId,
+        payment: cardId ? 'card' : pay,
+        dayMode: rm,
+        day: Math.min(31, Math.max(1, +$('#rDay').value || 1)),
+        active: $('#rActive').checked
+      });
+      // 이번 달 이후 미리 생성된 내역도 새 설정으로 갱신
+      const curYm = mKey(nowKST());
+      S.txs = S.txs.filter(t => !(t.recurringId === r.id && (t.recurringMonth || '') >= curYm));
+      ensureRecurringAhead();
+      save(); closeModal(); render(); toast('고정비가 수정됐어요 ✨');
+    };
   }
 
   function openCardForm(c) {
@@ -824,7 +1046,8 @@
     function fmtItemLine(p) {
       const c = cardOf(p.cardId);
       const cardStr = c ? `${c.emoji || '💳'}${esc(c.nickname || c.name)}` : (p.payment === 'cash' ? '💵현금' : '');
-      return `<b>${p.date.slice(5)}</b> · ${ICON[p.category] || '🏷️'} <b>${esc(p.category)}</b>${cardStr ? ' · ' + cardStr : ''}${p.installment > 1 ? ` · <b>${p.installment}개월할부</b>` : ''} · <b class="${p.type === 'income' ? 'inc' : 'exp'}">${p.type === 'income' ? '+' : '-'}${won(p.amount)}</b> · "${esc(p.memo)}"`;
+      const recStr = p.isRecurring ? ` · <b>🔁매달(${p.recurringDayMode === 'cardPayDay' ? '카드결제일' : ((p.recurringDay >= 31 ? '말일' : p.recurringDay + '일'))})</b>` : '';
+      return `<b>${p.date.slice(5)}</b> · ${ICON[p.category] || '🏷️'} <b>${esc(p.category)}</b>${cardStr ? ' · ' + cardStr : ''}${recStr}${p.installment > 1 ? ` · <b>${p.installment}개월할부</b>` : ''} · <b class="${p.type === 'income' ? 'inc' : 'exp'}">${p.type === 'income' ? '+' : '-'}${won(p.amount)}</b> · "${esc(p.memo)}"`;
     }
 
     function updatePreview(txt) {
@@ -977,11 +1200,27 @@
     const valid = list.filter(x => x.ok);
     if (!valid.length) { toast('금액을 못 알아들었어요: ' + text); return openForm(null, list[0]); }
 
-    const addedIds = [], addedGroups = [];
+    const addedIds = [], addedGroups = [], addedRecIds = [];
     let lastDate = selDay;
 
     for (const p of valid) {
       const c = cardOf(p.cardId);
+      if (p.isRecurring) {
+        const startMonth = mKey(nowKST());
+        const rec = {
+          id: uid(), type: p.type, amount: p.amount, memo: p.memo,
+          category: p.category, cardId: p.cardId, payment: p.payment,
+          dayMode: p.recurringDayMode === 'cardPayDay' ? 'cardPayDay' : 'custom',
+          day: p.recurringDay || nowKST().getDate(),
+          active: true, startMonth
+        };
+        S.recurring ||= [];
+        S.recurring.push(rec);
+        addedRecIds.push(rec.id);
+        ensureRecurringAhead();
+        lastDate = `${startMonth}-${String(Math.min(28, resolveRecurringDay(rec))).padStart(2, '0')}`;
+        continue;
+      }
       const n = (p.type === 'expense' && p.installment > 1) ? p.installment : 1;
       if (n > 1) {
         const base = Math.floor(p.amount / n), rem = p.amount - base * n;
@@ -1012,7 +1251,8 @@
     const t = $('#toast');
     if (valid.length === 1) {
       const p = valid[0], c = cardOf(p.cardId), n = (p.type === 'expense' && p.installment > 1) ? p.installment : 1;
-      t.innerHTML = `✅ ${p.date.slice(5)} · ${esc(p.memo)} · ${p.category}${n > 1 ? ` (${n}개월)` : ''} · ${p.type === 'income' ? '+' : '-'}${won(p.amount)}${c ? ' · ' + (c.emoji || '💳') + esc(c.nickname || c.name) : (p.payment === 'cash' ? ' · 💵현금' : '')}<br><small>"${esc(text)}"</small> <button id="undoV" class="chip">되돌리기</button>`;
+      const recTag = p.isRecurring ? ` · 🔁매달(${p.recurringDayMode === 'cardPayDay' && c?.payDay ? `결제일 ${c.payDay}일` : (p.recurringDay >= 31 ? '말일' : (p.recurringDay || nowKST().getDate()) + '일')})` : '';
+      t.innerHTML = `✅ ${p.date.slice(5)} · ${esc(p.memo)} · ${p.category}${recTag}${n > 1 ? ` (${n}개월)` : ''} · ${p.type === 'income' ? '+' : '-'}${won(p.amount)}${c ? ' · ' + (c.emoji || '💳') + esc(c.nickname || c.name) : (p.payment === 'cash' ? ' · 💵현금' : '')}<br><small>"${esc(text)}"</small> <button id="undoV" class="chip">되돌리기</button>`;
     } else {
       const sum = valid.reduce((a, x) => a + (x.type === 'income' ? x.amount : -x.amount), 0);
       const summaryNames = valid.map(x => `${esc(x.memo)}(${won(x.amount)})`).join(', ');
@@ -1020,7 +1260,8 @@
     }
     t.classList.remove('hidden'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.add('hidden'), 7500);
     $('#undoV').onclick = () => {
-      S.txs = S.txs.filter(x => !addedIds.includes(x.id) && (!x.installmentGroup || !addedGroups.includes(x.installmentGroup)));
+      S.txs = S.txs.filter(x => !addedIds.includes(x.id) && (!x.installmentGroup || !addedGroups.includes(x.installmentGroup)) && (!x.recurringId || !addedRecIds.includes(x.recurringId)));
+      S.recurring = (S.recurring || []).filter(r => !addedRecIds.includes(r.id));
       save(); t.classList.add('hidden'); render();
     };
   }

@@ -88,5 +88,29 @@ assert.strictEqual(commaSepMulti.length, 2);
 assert.strictEqual(commaSepMulti[0].amount, 10000);
 assert.strictEqual(commaSepMulti[1].amount, 5000);
 
+// 매달 고정비 음성 파싱 테스트
+const rec1 = P.parseTransaction('매달 보험비로 96800원 지출있어', ctx);
+assert.strictEqual(rec1.isRecurring, true);
+assert.strictEqual(rec1.amount, 96800);
+assert.strictEqual(rec1.memo, '보험비');
+assert.strictEqual(rec1.category, '생활');
+assert.strictEqual(rec1.recurringDayMode, 'cardPayDay');
+assert.strictEqual(rec1.cardId, '1');
+
+const rec2 = P.parseTransaction('매달 1일 넷플릭스 17000원', ctx);
+assert.strictEqual(rec2.isRecurring, true);
+assert.strictEqual(rec2.amount, 17000);
+assert.strictEqual(rec2.memo, '넷플릭스');
+assert.strictEqual(rec2.category, '문화여가');
+assert.strictEqual(rec2.recurringDayMode, 'custom');
+assert.strictEqual(rec2.recurringDay, 1);
+
+const rec3 = P.parseTransaction('매월 말일 월세 50만원 현금', ctx);
+assert.strictEqual(rec3.isRecurring, true);
+assert.strictEqual(rec3.amount, 500000);
+assert.strictEqual(rec3.payment, 'cash');
+assert.strictEqual(rec3.recurringDayMode, 'custom');
+assert.strictEqual(rec3.recurringDay, 31);
+
 console.log('MULTI-TX TESTS PASSED!', JSON.stringify(multi1));
 console.log('ALL TESTS PASSED!');
