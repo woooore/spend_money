@@ -72,5 +72,21 @@ assert.strictEqual(singleWithConn.length, 1);
 assert.strictEqual(singleWithConn[0].amount, 10000);
 assert.strictEqual(singleWithConn[0].memo, '택시');
 
+// 음성인식이 숫자를 '5,000원' 형태로 천 단위 쉼표를 넣어도 다건 분리가 깨지지 않아야 함
+const commaMulti = P.parseTransactions('떡볶이 만원 현금으로 먹고 카페 5,000원 썼어', ctx);
+assert.strictEqual(commaMulti.length, 2);
+assert.deepStrictEqual(
+  commaMulti.map(x => ({ memo: x.memo, amount: x.amount, payment: x.payment })),
+  [
+    { memo: '떡볶이', amount: 10000, payment: 'cash' },
+    { memo: '카페', amount: 5000, payment: 'card' }
+  ]
+);
+
+const commaSepMulti = P.parseTransactions('떡볶이 10,000원, 카페 5,000원', ctx);
+assert.strictEqual(commaSepMulti.length, 2);
+assert.strictEqual(commaSepMulti[0].amount, 10000);
+assert.strictEqual(commaSepMulti[1].amount, 5000);
+
 console.log('MULTI-TX TESTS PASSED!', JSON.stringify(multi1));
 console.log('ALL TESTS PASSED!');
