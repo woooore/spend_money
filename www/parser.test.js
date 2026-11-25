@@ -112,5 +112,21 @@ assert.strictEqual(rec3.payment, 'cash');
 assert.strictEqual(rec3.recurringDayMode, 'custom');
 assert.strictEqual(rec3.recurringDay, 31);
 
+// 유이자 · 수수료율 · 부분무이자(슬림할부) 음성 파싱 테스트
+const paidInst = P.parseTransaction('노트북 120만원 6개월 유이자 연 15% 할부로 샀어', ctx);
+assert.strictEqual(paidInst.amount, 1200000);
+assert.strictEqual(paidInst.installment, 6);
+assert.strictEqual(paidInst.interestFree, false);
+assert.strictEqual(paidInst.interestMode, 'paid');
+assert.strictEqual(paidInst.interestRate, 15);
+assert.strictEqual(paidInst.memo, '노트북');
+
+const slimInst = P.parseTransaction('아이패드 100만원 10개월 앞 3회차 무이자 할부로 샀어', ctx);
+assert.strictEqual(slimInst.amount, 1000000);
+assert.strictEqual(slimInst.installment, 10);
+assert.strictEqual(slimInst.interestMode, 'partial');
+assert.strictEqual(slimInst.freeMonths, 3);
+assert.strictEqual(slimInst.memo, '아이패드');
+
 console.log('MULTI-TX TESTS PASSED!', JSON.stringify(multi1));
 console.log('ALL TESTS PASSED!');

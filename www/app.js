@@ -270,8 +270,9 @@
   function txRow(t) {
     const c = cardOf(t.cardId);
     const pay = c ? (c.emoji || '💳') + (c.nickname || c.name) : (t.payment === 'cash' ? '💵현금' : '');
+    const feeTxt = t.interestFee > 0 ? ` · 이자 ${won(t.interestFee)} 포함` : '';
     return `<div class="tx" data-id="${t.id}"><div class="ic">${ICON[t.category] || '💸'}</div>
-      <div class="mid"><div>${t.recurringId ? '<span class="badge" style="margin-left:0;margin-right:4px">🔁고정</span>' : ''}${esc(t.memo || t.category)}</div><small>${t.category}${pay ? ' · ' + esc(pay) : ''}${t.date ? ' · ' + t.date.slice(5) : ''}</small></div>
+      <div class="mid"><div>${t.recurringId ? '<span class="badge" style="margin-left:0;margin-right:4px">🔁고정</span>' : ''}${esc(t.memo || t.category)}</div><small>${t.category}${pay ? ' · ' + esc(pay) : ''}${feeTxt}${t.date ? ' · ' + t.date.slice(5) : ''}</small></div>
       <div class="amt ${t.type === 'income' ? 'inc' : 'exp'}">${t.type === 'income' ? '+' : '-'}${won(t.amount)}</div></div>`;
   }
   function bindTx(root) { root.querySelectorAll('.tx').forEach(e => e.onclick = () => openForm(S.txs.find(t => t.id === e.dataset.id))); }
@@ -568,6 +569,24 @@
     const dt = new Date(y, m - 1 + (d >= payDay ? 1 : 0), payDay);
     return Parser.ymd(dt);
   }
+  // 한국 카드사 표준 할부 상환 스케줄 (원금균등 + 미결제 잔액 기준 체감 수수료, 부분무이자 지원)
+  function calcInstallmentSchedule(amt, n, mode, annualRate, freeMonths) {
+    const months = Math.max(1, +n || 1);
+    const base = Math.floor(amt / months), rem = amt - base * months;
+    const rate = (mode === 'free') ? 0 : (Math.max(0, +annualRate || 0) / 100);
+    const fm = mode === 'partial' ? Math.max(0, Math.min(months - 1, +freeMonths || 0)) : 0;
+    let remaining = amt, totalFee = 0;
+    const items = [];
+    for (let i = 0; i < months; i++) {
+      const principal = i === 0 ? base + rem : base;
+      const isFreeTurn = mode === 'free' || (mode === 'partial' && i < fm);
+      const fee = isFreeTurn ? 0 : Math.round(remaining * rate / 12);
+      remaining -= principal;
+      totalFee += fee;
+      items.push({ turn: i + 1, principal, fee, total: principal + fee });
+    }
+    return { items, totalFee, totalPay: amt + totalFee };
+  }
 
   function openForm(t, preset) {
     const isNew = !t;
@@ -626,8 +645,20 @@
         <label>할부</label>
         <div class="chips" id="fInstChips" data-choice-group>${instOpts.map(n => `<button type="button" class="chip ${n === initInst ? 'on' : ''}" data-inst="${n}">${n === 1 ? '일시불' : n + '개월'}</button>`).join('')}</div>
         <div id="instDetail" style="display:none;margin-top:8px;padding:10px;border-radius:12px;background:var(--surface2)">
-          <label style="display:flex;align-items:center;gap:8px;margin:0 0 8px;color:var(--txt);font-size:14px"><input type="checkbox" id="fFree" style="width:auto" ${t.interestFree !== false ? 'checked' : ''}> 무이자 할부</label>
-          <div id="fRateBox" style="display:none"><label style="margin-top:0">연 할부 수수료율 (%)</label><input id="fRate" type="number" step="0.1" value="14.0"></div>
+          <div class="seg mini" id="fInstMode" style="margin-bottom:8px">
+            <button type="button" data-im="free" class="i">무이자</button>
+            <button type="button" data-im="paid" class="i">유이자</button>
+            <button type="button" data-im="partial" class="i">부분무이자</button>
+          </div>
+          <div id="fRateBox" style="display:none">
+            <label style="margin-top:0">연 할부 수수료율 (%) · 카드사 평균 12~19.9%</label>
+            <input id="fRate" type="number" step="0.1" value="${t.interestRate || 14.5}">
+            <div class="chips" id="fRateChips" style="margin-top:6px">${[10, 12, 14.5, 16.9, 19.9].map(r => `<button type="button" class="chip" data-r="${r}" tabindex="-1">${r}%</button>`).join('')}</div>
+          </div>
+          <div id="fPartialBox" style="display:none;margin-top:8px">
+            <label style="margin-top:0">앞 몇 개월(회차) 이자 면제?</label>
+            <div class="chips" id="fFreeMChips">${[2, 3, 4, 5, 6].map(m => `<button type="button" class="chip" data-fm="${m}" tabindex="-1">1~${m}회차 면제</button>`).join('')}</div>
+          </div>
           <label>첫 결제일 (카드 결제일 기준, 수정 가능)</label><input id="fFirstPay" type="date" value="${firstPayDate(t.date, (cardOf(t.cardId) || {}).payDay)}">
           <div id="instPreview" class="note"></div>
         </div>
@@ -638,6 +669,8 @@
     let selCat = t.category || (type === 'income' ? '급여' : '식비');
     let selPay = t.cardId ? t.cardId : (t.payment === 'cash' ? 'cash' : 'none');
     let selInst = initInst;
+    let instMode = t.interestMode || (t.interestFree === false ? 'paid' : 'free');
+    let freeMonths = t.freeMonths || 3;
     let catTouched = !isNew || !!(preset && preset.category);
 
     const renderCatChips = () => {
@@ -671,20 +704,36 @@
       const n = selInst || 1;
       $('#instDetail').style.display = (type === 'expense' && n > 1) ? 'block' : 'none';
       if (n <= 1) return;
-      const free = $('#fFree').checked;
-      $('#fRateBox').style.display = free ? 'none' : 'block';
+      document.querySelectorAll('#fInstMode button').forEach(b => b.classList.toggle('on', b.dataset.im === instMode));
+      $('#fRateBox').style.display = instMode === 'free' ? 'none' : 'block';
+      $('#fPartialBox').style.display = instMode === 'partial' ? 'block' : 'none';
+      if (instMode === 'partial') {
+        if (freeMonths >= n) freeMonths = Math.max(1, Math.floor(n / 2));
+        document.querySelectorAll('#fFreeMChips button').forEach(b => {
+          const fm = +b.dataset.fm;
+          b.style.display = fm < n ? '' : 'none';
+          b.classList.toggle('on', fm === freeMonths);
+        });
+      }
       if (recalcDate) {
         const c = cardOf(selPay);
         $('#fFirstPay').value = firstPayDate($('#fDate').value, c && c.payDay);
       }
       const amt = moneyVal($('#fAmt'));
-      const rate = free ? 0 : (+$('#fRate').value || 0);
-      const totalPay = free ? amt : Math.round(amt * (1 + (rate / 100) * (n + 1) / 24));
-      const per = Math.floor(totalPay / n);
+      const rate = instMode === 'free' ? 0 : (+$('#fRate').value || 0);
       const fp = $('#fFirstPay').value || $('#fDate').value;
-      $('#instPreview').textContent = amt > 0
-        ? `월 ${won(per)} × ${n}개월 (${free ? '무이자' : '이자 포함 총 ' + won(totalPay)}) · ${fp.slice(5)}부터 매월 기록`
-        : '금액을 입력하면 월 납입금이 계산돼요';
+      if (!(amt > 0)) {
+        $('#instPreview').textContent = '금액을 입력하면 월 납입금과 할부이자가 계산돼요';
+        return;
+      }
+      const sch = calcInstallmentSchedule(amt, n, instMode, rate, freeMonths);
+      if (instMode === 'free') {
+        $('#instPreview').innerHTML = `월 <b>${won(sch.items[0].total)}</b> × ${n}개월 (무이자 · 총 ${won(amt)}) · ${fp.slice(5)}부터 매월 기록`;
+      } else {
+        const first = sch.items[0].total, last = sch.items[sch.items.length - 1].total;
+        const partTxt = instMode === 'partial' ? `1~${freeMonths}회차 면제 · ` : '';
+        $('#instPreview').innerHTML = `💡 ${partTxt}총 할부이자 <b class="exp">+${won(sch.totalFee)}</b> (원금+이자 총 <b>${won(sch.totalPay)}</b>)<br>1회차 ${won(first)} → ${n}회차 ${won(last)} (잔액 기준 체감 · ${fp.slice(5)}부터 기록)`;
+      }
     };
 
     bindMoneyInput($('#fAmt'), () => updateInst(false));
@@ -767,7 +816,18 @@
         updateInst(true);
         flow.syncHints();
       };
-      $('#fFree').onchange = () => { updateInst(false); flow.syncHints(); };
+      $('#fInstMode').onclick = e => {
+        const b = e.target.closest('[data-im]'); if (!b) return;
+        instMode = b.dataset.im; updateInst(false); flow.syncHints();
+      };
+      $('#fRateChips').onclick = e => {
+        const b = e.target.closest('[data-r]'); if (!b) return;
+        $('#fRate').value = b.dataset.r; updateInst(false);
+      };
+      $('#fFreeMChips').onclick = e => {
+        const b = e.target.closest('[data-fm]'); if (!b) return;
+        freeMonths = +b.dataset.fm; updateInst(false);
+      };
       $('#fRate').oninput = () => updateInst(false);
       $('#fDate').onchange = () => updateInst(true);
       $('#fFirstPay').onchange = () => updateInst(false);
@@ -824,22 +884,22 @@
       }
       const n = (isNew && type === 'expense') ? (selInst || 1) : 1;
       if (n > 1) {
-        const free = $('#fFree').checked;
-        const rate = free ? 0 : (+$('#fRate').value || 0);
-        const totalPay = free ? amt : Math.round(amt * (1 + (rate / 100) * (n + 1) / 24));
-        const base = Math.floor(totalPay / n), rem = totalPay - base * n;
+        const rate = instMode === 'free' ? 0 : (+$('#fRate').value || 0);
+        const sch = calcInstallmentSchedule(amt, n, instMode, rate, freeMonths);
         const fp = $('#fFirstPay').value || $('#fDate').value;
         const gid = uid(), memo = $('#fMemo').value.trim() || selCat;
-        for (let i = 0; i < n; i++) {
+        sch.items.forEach((it, i) => {
           S.txs.push({
-            id: uid(), type: 'expense', amount: i === 0 ? base + rem : base,
+            id: uid(), type: 'expense', amount: it.total,
+            principal: it.principal, interestFee: it.fee,
             date: addMonths(fp, i), category: selCat,
             memo: `[${i + 1}/${n}] ${memo}`, cardId, payment,
             installmentGroup: gid, installmentInfo: `${i + 1}/${n}`
           });
-        }
+        });
         save(); selDay = fp; const d = new Date(fp); cur = new Date(d.getFullYear(), d.getMonth(), 1);
-        closeModal(); render(); toast(`${n}개월 할부(${won(base)}/월)로 등록됐어요`);
+        closeModal(); render();
+        toast(sch.totalFee > 0 ? `${n}개월 할부 등록 완료 (총 이자 +${won(sch.totalFee)})` : `${n}개월 무이자 할부(${won(sch.items[0].total)}/월)로 등록됐어요`);
       } else {
         Object.assign(t, { type, amount: amt, date: $('#fDate').value, category: selCat, memo: $('#fMemo').value.trim() || selCat, cardId, payment });
         if (isNew) S.txs.push(t);
@@ -855,7 +915,7 @@
       type === 'expense' ? $('#fPayChips') : null,
       $('#fDate'),
       (isNew && type === 'expense') ? $('#fInstChips') : null,
-      (isNew && type === 'expense' && selInst > 1 && !$('#fFree').checked) ? $('#fRate') : null,
+      (isNew && type === 'expense' && selInst > 1 && instMode !== 'free') ? $('#fRate') : null,
       (isNew && type === 'expense' && selInst > 1) ? $('#fFirstPay') : null
     ], () => $('#fSave').click());
 
@@ -1047,7 +1107,16 @@
       const c = cardOf(p.cardId);
       const cardStr = c ? `${c.emoji || '💳'}${esc(c.nickname || c.name)}` : (p.payment === 'cash' ? '💵현금' : '');
       const recStr = p.isRecurring ? ` · <b>🔁매달(${p.recurringDayMode === 'cardPayDay' ? '카드결제일' : ((p.recurringDay >= 31 ? '말일' : p.recurringDay + '일'))})</b>` : '';
-      return `<b>${p.date.slice(5)}</b> · ${ICON[p.category] || '🏷️'} <b>${esc(p.category)}</b>${cardStr ? ' · ' + cardStr : ''}${recStr}${p.installment > 1 ? ` · <b>${p.installment}개월할부</b>` : ''} · <b class="${p.type === 'income' ? 'inc' : 'exp'}">${p.type === 'income' ? '+' : '-'}${won(p.amount)}</b> · "${esc(p.memo)}"`;
+      let instStr = '';
+      if (p.installment > 1) {
+        if (p.interestMode && p.interestMode !== 'free') {
+          const sch = calcInstallmentSchedule(p.amount, p.installment, p.interestMode, p.interestRate || 14.5, p.freeMonths || 3);
+          instStr = ` · <b>${p.installment}개월(${p.interestMode === 'partial' ? `1~${p.freeMonths}회무이자·` : `연${p.interestRate || 14.5}%·`}이자+${won(sch.totalFee)})</b>`;
+        } else {
+          instStr = ` · <b>${p.installment}개월무이자</b>`;
+        }
+      }
+      return `<b>${p.date.slice(5)}</b> · ${ICON[p.category] || '🏷️'} <b>${esc(p.category)}</b>${cardStr ? ' · ' + cardStr : ''}${recStr}${instStr} · <b class="${p.type === 'income' ? 'inc' : 'exp'}">${p.type === 'income' ? '+' : '-'}${won(p.amount)}</b> · "${esc(p.memo)}"`;
     }
 
     function updatePreview(txt) {
@@ -1223,17 +1292,20 @@
       }
       const n = (p.type === 'expense' && p.installment > 1) ? p.installment : 1;
       if (n > 1) {
-        const base = Math.floor(p.amount / n), rem = p.amount - base * n;
+        const im = p.interestMode || (p.interestFree === false ? 'paid' : 'free');
+        const sch = calcInstallmentSchedule(p.amount, n, im, p.interestRate || 14.5, p.freeMonths || 3);
         const fp = firstPayDate(p.date, c && c.payDay);
         const gid = uid();
-        for (let i = 0; i < n; i++) {
+        sch.items.forEach((it, i) => {
           S.txs.push({
-            id: uid(), type: 'expense', amount: i === 0 ? base + rem : base,
+            id: uid(), type: 'expense', amount: it.total,
+            principal: it.principal, interestFee: it.fee,
             date: addMonths(fp, i), category: p.category,
             memo: `[${i + 1}/${n}] ${p.memo}`, cardId: p.cardId, payment: p.payment,
             installmentGroup: gid, installmentInfo: `${i + 1}/${n}`
           });
-        }
+        });
+        p._totalFee = sch.totalFee;
         addedGroups.push(gid);
         lastDate = fp;
       } else {
@@ -1252,7 +1324,8 @@
     if (valid.length === 1) {
       const p = valid[0], c = cardOf(p.cardId), n = (p.type === 'expense' && p.installment > 1) ? p.installment : 1;
       const recTag = p.isRecurring ? ` · 🔁매달(${p.recurringDayMode === 'cardPayDay' && c?.payDay ? `결제일 ${c.payDay}일` : (p.recurringDay >= 31 ? '말일' : (p.recurringDay || nowKST().getDate()) + '일')})` : '';
-      t.innerHTML = `✅ ${p.date.slice(5)} · ${esc(p.memo)} · ${p.category}${recTag}${n > 1 ? ` (${n}개월)` : ''} · ${p.type === 'income' ? '+' : '-'}${won(p.amount)}${c ? ' · ' + (c.emoji || '💳') + esc(c.nickname || c.name) : (p.payment === 'cash' ? ' · 💵현금' : '')}<br><small>"${esc(text)}"</small> <button id="undoV" class="chip">되돌리기</button>`;
+      const instTag = n > 1 ? ` (${n}개월${p._totalFee > 0 ? ` · 이자+${won(p._totalFee)}` : ' 무이자'})` : '';
+      t.innerHTML = `✅ ${p.date.slice(5)} · ${esc(p.memo)} · ${p.category}${recTag}${instTag} · ${p.type === 'income' ? '+' : '-'}${won(p.amount)}${c ? ' · ' + (c.emoji || '💳') + esc(c.nickname || c.name) : (p.payment === 'cash' ? ' · 💵현금' : '')}<br><small>"${esc(text)}"</small> <button id="undoV" class="chip">되돌리기</button>`;
     } else {
       const sum = valid.reduce((a, x) => a + (x.type === 'income' ? x.amount : -x.amount), 0);
       const summaryNames = valid.map(x => `${esc(x.memo)}(${won(x.amount)})`).join(', ');

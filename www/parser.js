@@ -235,15 +235,45 @@
       work = work.replace(/(?:매달|매월|달마다|월마다|고정비(?:로)?|정기\s*결제(?:로)?|결제일(?:에|마다)?|말일(?:에|마다)?)/g, ' ');
     }
 
-    // 할부 먼저 추출 ("12개월 할부", "3개월 무이자" — 금액 오인식 방지)
+    // 할부 및 할부이자(무이자/유이자/부분무이자/수수료율) 먼저 추출 — 금액 오인식 방지
     let installment = 1;
-    let interestFree = !/유이자/.test(work);
+    let interestMode = 'free'; // 'free' | 'paid' | 'partial'
+    let interestRate = 14.5;
+    let freeMonths = 0;
+
+    // 수수료율/이율 추출: "연 14.5%", "수수료 15프로", "이율 12퍼센트", "14.5%"
+    const rateM = work.match(/(?:연\s*|할부\s*수수료\s*|수수료율?\s*|이율\s*|이자율?\s*)?(\d{1,2}(?:\.\d+)?)\s*(?:%|프로|퍼센트)(?:로|으로)?/);
+    if (rateM && parseFloat(rateM[1]) > 0 && parseFloat(rateM[1]) <= 30) {
+      interestRate = parseFloat(rateM[1]);
+      interestMode = 'paid';
+      work = work.replace(rateM[0], ' ');
+    }
+    // 부분무이자(슬림할부) 추출: "앞 3개월 무이자", "1~3회차 무이자", "3회차까지 면제", "부분무이자"
+    const partM = work.match(/(?:앞\s*|초기\s*|1\s*[~-]\s*)?(\d{1,2})\s*(?:회차|개월)\s*(?:까지\s*)?(?:무이자|면제)/);
+    if (partM && +partM[1] >= 1 && +partM[1] <= 12 && /(\d{1,2})\s*개월\s*(?:부분\s*무이자\s*)?(?:할부)?/.test(work)) {
+      const allInst = [...work.matchAll(/(\d{1,2})\s*개월/g)].map(m => +m[1]);
+      const maxInst = Math.max(...allInst, 0);
+      if (maxInst > +partM[1]) {
+        freeMonths = +partM[1];
+        interestMode = 'partial';
+        work = work.replace(partM[0], ' ');
+      }
+    }
+    if (/부분\s*무이자|슬림\s*할부/.test(work)) {
+      interestMode = 'partial';
+      if (!freeMonths) freeMonths = 3;
+      work = work.replace(/(?:부분\s*무이자|슬림\s*할부)(?:로|으로)?/g, ' ');
+    } else if (/유이자/.test(work)) {
+      interestMode = 'paid';
+    }
+
     const instM = work.match(/(\d{1,2})\s*개월\s*(?:무이자|유이자)?\s*(?:할부)?(?:로|으로)?/);
     if (instM && +instM[1] >= 2 && +instM[1] <= 60) {
       installment = +instM[1];
       work = work.replace(instM[0], ' ');
     }
-    work = work.replace(/일시불|무이자\s*할부|유이자\s*할부|무이자|할부로?/g, ' ');
+    const interestFree = interestMode === 'free';
+    work = work.replace(/일시불|(?:무이자|유이자)\s*할부(?:로|으로)?|(?:무이자|유이자)(?:로|으로)?|할부(?:로|으로)?/g, ' ');
 
     // 날짜 표현을 먼저 파악 후 숫자형 날짜("11월 10일", "3일 전")는 work에서 제거해 금액 오인식 방지
     const date = detectDate(text, now);
@@ -321,6 +351,9 @@
       type, amount, date, category, memo,
       installment: type === 'expense' ? installment : 1,
       interestFree,
+      interestMode: (type === 'expense' && installment > 1) ? interestMode : 'free',
+      interestRate: (type === 'expense' && installment > 1 && interestMode !== 'free') ? interestRate : 0,
+      freeMonths: (type === 'expense' && installment > 1 && interestMode === 'partial') ? freeMonths : 0,
       cardId: card ? card.id : null,
       payment: card ? 'card' : (cash ? 'cash' : 'none'),
       isRecurring,
