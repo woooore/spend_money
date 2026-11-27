@@ -149,5 +149,34 @@ const corr4 = P.parseTransaction('점심으로 김밥 말고 라면 만원 먹�
 assert.strictEqual(corr4.amount, 10000);
 assert.strictEqual(corr4.memo, '점심 라면');
 
+// '현금 주고 먹고', '만원 주고 라면도 먹었어' 등 복합 구어체 메모 군더더기('주고', '~에', '~도') 제거 검증
+const jugoMulti1 = P.parseTransactions('내가 점심에 김밥 5,000원 현금 주고 먹고 만 원 주고 라면도 먹었어', ctx);
+assert.strictEqual(jugoMulti1.length, 2);
+assert.deepStrictEqual(
+  jugoMulti1.map(x => ({ memo: x.memo, amount: x.amount, payment: x.payment })),
+  [
+    { memo: '점심 김밥', amount: 5000, payment: 'cash' },
+    { memo: '라면', amount: 10000, payment: 'card' }
+  ]
+);
+
+const jugoMulti2 = P.parseTransactions('5000원 주고 김밥 먹고 만원 주고 라면 먹었어', ctx);
+assert.deepStrictEqual(
+  jugoMulti2.map(x => ({ memo: x.memo, amount: x.amount })),
+  [
+    { memo: '김밥', amount: 5000 },
+    { memo: '라면', amount: 10000 }
+  ]
+);
+
+const jugoMulti3 = P.parseTransactions('점심에 5000원 주고 김밥 만원 주고 라면 먹었어', ctx);
+assert.deepStrictEqual(
+  jugoMulti3.map(x => ({ memo: x.memo, amount: x.amount })),
+  [
+    { memo: '점심 김밥', amount: 5000 },
+    { memo: '라면', amount: 10000 }
+  ]
+);
+
 console.log('MULTI-TX TESTS PASSED!', JSON.stringify(multi1));
 console.log('ALL TESTS PASSED!');

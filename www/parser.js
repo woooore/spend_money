@@ -223,41 +223,48 @@
     return c || null;
   }
 
-  // 문장에서 금액 추출 (연속 숫자 병합 버그 방지 + 소수점 단위 + '원' 생략 지원)
+  // 문장에서 가장 먼저 등장하는 금액 추출 (좌→우 순서 보장 + 동일 시작점일 때 가장 긴 표현 우선)
   function extractAmount(work) {
+    const cands = [];
+    const add = (m, amount, matched, prio) => {
+      if (!m || !(amount > 0) || !matched) return;
+      const idx = m.index + m[0].indexOf(matched);
+      cands.push({ amount, matched, idx, len: matched.length, prio });
+    };
     let m;
     // 1) 소수점 단위: "3.5만원", "1.2억", "3.5만"
     if ((m = work.match(/(\d+\.\d+\s*(?:억|만|천))\s*원?/))) {
-      return { amount: koreanToNumber(m[1]), matched: m[0] };
+      add(m, koreanToNumber(m[1]), m[0], 1);
     }
     // 2) 단위 포함 + '원': "삼만 오천원", "3만 5,000원", "만원", "150만원"
     const unitChunk = '(?:[0-9,]+|[일이삼사오육칠팔구십백천]+)?\\s*(?:억|만|천|백|십)';
     const withUnitWon = new RegExp('(?:^|[^가-힣0-9])((' + unitChunk + '(?:\\s*' + unitChunk + ')*(?:\\s*(?:[0-9,]+|[일이삼사오육칠팔구]+))?)\\s*원)');
     if ((m = work.match(withUnitWon))) {
-      const amt = koreanToNumber(m[2]);
-      if (amt > 0) return { amount: amt, matched: m[1] };
+      add(m, koreanToNumber(m[2]), m[1], 2);
     }
     // 3) 순수 숫자 + '원': "30,000원", "4500원" (앞의 모델번호 '아이폰 17' 등과 분리)
     if ((m = work.match(/([1-9][0-9,]*)\s*원/))) {
-      return { amount: parseInt(m[1].replace(/,/g, ''), 10), matched: m[0] };
+      add(m, parseInt(m[1].replace(/,/g, ''), 10), m[0], 3);
     }
     // 4) 순수 한글 수사 + '원': "오원" 등
     if ((m = work.match(/(?:^|[^가-힣])([일이삼사오육칠팔구]+)\s*원/))) {
-      return { amount: koreanToNumber(m[1]), matched: m[1] + '원' };
+      add(m, koreanToNumber(m[1]), m[1] + '원', 4);
     }
     // 5) '원' 생략: 숫자 + 단위 ("3만 5천", "3만 5000", "3만", "5천")
     if ((m = work.match(/([0-9][0-9,]*\s*(?:억|만|천)(?:\s*(?:[0-9,]+|[일이삼사오육칠팔구십백천]+)\s*(?:만|천|백)?)?)(?![가-힣])/))) {
-      return { amount: koreanToNumber(m[1]), matched: m[1] };
+      add(m, koreanToNumber(m[1]), m[1], 5);
     }
     // 6) '원' 생략: 한글 금액 ("만이천", "사천오백", "삼만오천", "오만", "삼천")
     if ((m = work.match(/(?:^|\s)([일이삼사오육칠팔구십백천만억]*[백천만억][일이삼사오육칠팔구십백천만억]*[십백천만억])(?=\s|$|(?:주고|어치|정도))/))) {
-      if (m[1].length >= 2) return { amount: koreanToNumber(m[1]), matched: m[1] };
+      if (m[1].length >= 2) add(m, koreanToNumber(m[1]), m[1], 6);
     }
     // 7) '원' 생략: 콤마 숫자("12,000") 또는 0으로 끝나는 3~7자리 단독 금액("4500", "12000")
     if ((m = work.match(/(?:^|\s)([1-9][0-9]{0,2}(?:,[0-9]{3})+|[1-9][0-9]{1,5}0)(?=\s|$)/))) {
-      return { amount: parseInt(m[1].replace(/,/g, ''), 10), matched: m[1] };
+      add(m, parseInt(m[1].replace(/,/g, ''), 10), m[1], 7);
     }
-    return { amount: 0, matched: '' };
+    if (!cands.length) return { amount: 0, matched: '' };
+    cands.sort((a, b) => (a.idx - b.idx) || (b.len - a.len) || (a.prio - b.prio));
+    return { amount: cands[0].amount, matched: cands[0].matched };
   }
 
   /**
@@ -388,16 +395,28 @@
       : matchCategory(text, CATEGORIES, '기타지출'));
 
     // 메모: 군더더기 서술어·조사·연결어미 정리
+    const KEEP_DO_NOUNS = /^(?:포도|제주도|강원도|여의도|울릉도|독도|완도|진도|영도|거제도|안면도|강화도|대부도|선유도|태권도|검도|유도|철도|편도|중도|연도|용도|인도|지도|파도|기도|복도)$/;
     let memo = work
       .replace(/(?:체크|신용)?\s*카드(?:로|으로)?|현금(?:으로|로)?/g, ' ')
       .replace(/(?:주고|사|시켜)\s*(?:먹었어(?:요)?|마셨어(?:요)?|샀어(?:요)?|먹고|마시고)/g, ' ')
       .replace(/타고\s*왔어(?:요)?|하고\s*왔어(?:요)?|다녀왔어(?:요)?/g, ' ')
       .replace(/(?:에\s*)?(?:가서|들러서|갔다가|들렀다가)(?=\s|$)/g, ' ')
       .replace(/지출(?:이?\s*있어요?|있음|됨|함)?|나가는\s*거|나가요?/g, ' ')
-      .replace(/샀어요?|삿어요?|샀다|샀음|샀고|썼어요?|썻어요?|썼다|썻다|썼음|썻음|썼고|썻고|결제(?:했어요?|했음|함|하고)?|계산(?:했어요?|하고)?|사용(?:했어요?|함|하고)?|입금(?:됐어요?|되었어요?|됨|됐고)?|들어왔어요?|들어왔고|받았어요?|받았고|받음|냈어요?|냈고|냈음|먹었어요?|먹었고|먹음|먹고|마셨어요?|마셨고|마시고|탔어요?|탔고|타고|사고|쓰고|내고|보고|긁고|했어요?|했어|하고/g, ' ')
-      .replace(/(?:^|\s)(?:나는|내가|나|저|제가|더|또|그리고|그다음에?|에|로|으로)(?=\s|$)/g, ' ')
-      .replace(/(?:에서|에서는|으로|로|을|를|이랑|랑|짜리|어치|정도)(?=\s|$)/g, ' ')
+      .replace(/(?:사먹었어요?|사먹고|시켜먹었어요?|시켜먹고|줬어요?|줬고|줬음|주고|주구|나왔어요?|나왔고|들었어요?|들었고|보냈어요?|보내고|이체했어요?|이체하고|송금했어요?|송금하고|샀어요?|삿어요?|샀다|샀음|샀고|썼어요?|썻어요?|썼다|썻다|썼음|썻음|썼고|썻고|결제(?:했어요?|했음|함|하고)?|계산(?:했어요?|하고)?|사용(?:했어요?|함|하고)?|입금(?:됐어요?|되었어요?|됨|됐고)?|들어왔어요?|들어왔고|받았어요?|받았고|받음|냈어요?|냈고|냈음|내고|먹었어요?|먹었고|먹음|먹고|먹구|마셨어요?|마셨고|마시고|탔어요?|탔고|타고|(?<!교통|접촉|안전)사고|사구|쓰고|쓰구|보고|긁고|했어요?|했어|하고)(?=\s|$)/g, ' ')
+      .replace(/(?:^|\s)(?:나는|내가|나|저|제가|우리|방금|아까|더|또|그리고|그다음에?|에|로|으로|도)(?=\s|$)/g, ' ')
+      .replace(/(아침|점심|저녁|야식|새벽|오전|오후)(?:에|에는|으로|로)(?=\s|$)/g, '$1')
+      .replace(/(카페|식당|편의점|마트|백화점|병원|약국|미용실|주유소|영화관|헬스장|교회|학교|회사|집)에(?=\s|$)/g, '$1')
+      .replace(/(?:에서|에서는|으로|로|이랑|랑|짜리|원?어치|정도|쯤|가량)(?=\s|$)/g, ' ')
       .replace(/\s+/g, ' ').trim();
+
+    memo = memo.split(/\s+/).map(tok => {
+      if (tok.length >= 2 && /[가-힣]$/.test(tok)) {
+        if (/[을를]$/.test(tok) && !/^(?:가을|마을|노을|고을)$/.test(tok)) return tok.slice(0, -1);
+        if (/는$/.test(tok)) return tok.slice(0, -1);
+        if (/도$/.test(tok) && !KEEP_DO_NOUNS.test(tok)) return tok.slice(0, -1);
+      }
+      return tok;
+    }).filter(Boolean).join(' ');
     if (!memo) memo = category;
 
     const finalDayMode = isRecurring ? ((card && recurringDayMode === 'cardPayDay') ? 'cardPayDay' : 'custom') : undefined;
@@ -443,23 +462,24 @@
     if (spans.length < 2) return [chunk];
 
     const parts = [];
-    if (spans[0].isJjari || !chunk.slice(0, spans[0].start).trim()) {
-      // "만원짜리 충전기 오천원짜리 케이블" 형태: 각 금액 시작점 기준으로 분리
+    const isPriceBeforeNoun = /^\s*(?:주고|내고)\s+(?!(?:먹|마시|사|샀|삿|썼|썻|타|냈))/.test(chunk.slice(spans[0].end));
+    if (spans[0].isJjari || isPriceBeforeNoun || !chunk.slice(0, spans[0].start).trim()) {
+      // "만원짜리 충전기 오천원짜리 케이블" / "5000원 주고 김밥 만원 주고 라면" 형태: 각 금액 시작점 기준으로 분리
       for (let i = 0; i < spans.length; i++) {
         const s = i === 0 ? 0 : spans[i].start;
         const e = i + 1 < spans.length ? spans[i + 1].start : chunk.length;
         parts.push(chunk.slice(s, e).trim());
       }
     } else {
-      // "점심 만원 커피 오천원" 형태: 각 금액(+직후 현금/카드 표시) 끝점 기준으로 분리
+      // "점심 만원 커피 오천원" 형태: 각 금액(+직후 현금/카드/주고 표시) 끝점 기준으로 분리
       let prev = 0;
       for (let i = 0; i < spans.length; i++) {
         if (i === spans.length - 1) {
           parts.push(chunk.slice(prev).trim());
         } else {
           let cut = spans[i].end;
-          const payTail = chunk.slice(cut).match(/^\s*(?:현금(?:으로|로)?|(?:체크|신용)?카드(?:로|으로)?)/);
-          if (payTail) cut += payTail[0].length;
+          const payTail = chunk.slice(cut).match(/^\s*(?:현금(?:으로|로)?|(?:체크|신용)?카드(?:로|으로)?)?(?:\s*(?:주고|내고))?/);
+          if (payTail && payTail[0].trim()) cut += payTail[0].length;
           parts.push(chunk.slice(prev, cut).trim());
           prev = cut;
         }
@@ -477,8 +497,8 @@
     const norm = normalizeSpeechText(rawText).trim();
     if (!norm) return [parseTransaction('', ctx)];
 
-    // 1단계: 연결어미·접속사·쉼표 기준으로 절 후보 분리 (숫자 천 단위 쉼표 '5,000'은 제외)
-    const connRe = /(?:,(?!\d)|\/|\n|\s+(?:그리고|그다음에?|그러고\s*나서|또|추가로)\s+|(?<=(?:먹고|마시고|타고|사고|쓰고|내고|보고|결제하고|계산하고|사용하고|긁고|주고|받았고|들어왔고|썼고|썻고|샀고|탔고|냈고|먹었고|마셨고|갔다가|들렀다가|먹구|사구|쓰구))\s+|(?<=[가-힣0-9])(?:이랑|랑|하고|과|와)\s+)/g;
+    // 1단계: 연결어미·접속사·쉼표 기준으로 절 후보 분리 (숫자 천 단위 쉼표 '5,000' 및 가격 조사성 '주고'는 제외)
+    const connRe = /(?:,(?!\d)|\/|\n|\s+(?:그리고|그다음에?|그러고\s*나서|또|추가로)\s+|(?<=(?:먹고|마시고|타고|사고|쓰고|내고|보고|결제하고|계산하고|사용하고|긁고|받았고|들어왔고|썼고|썻고|샀고|탔고|냈고|먹었고|마셨고|갔다가|들렀다가|먹구|사구|쓰구|사먹고|시켜먹고))\s+|(?<=[가-힣0-9])(?:이랑|랑|하고|과|와)\s+)/g;
     const rawTokens = norm.split(connRe).map(s => s.trim()).filter(Boolean);
 
     // 각 후보가 독립 거래(금액 보유)인지 확인하며, 금액 없는 조각("택시 타고"의 "택시" 등)은 인접 절과 병합
