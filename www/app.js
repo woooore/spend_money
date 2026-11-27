@@ -1078,7 +1078,7 @@
     sheet.innerHTML = `<div class="vsheet">
       <div class="vhead">
         <span class="vwave" id="vWave"><i></i><i></i><i></i></span>
-        <span id="vStatus" style="flex:1;font-size:13px;font-weight:600">듣고 있어요 · 편하게 끊어서 말씀하세요</span>
+        <span id="vStatus" style="flex:1;font-size:13px;font-weight:600">듣고 있어요 · 틀리면 "~가 아니라 ~"로 바로 정정!</span>
         <button type="button" class="chip" id="vCancel">취소</button>
       </div>
       <input id="vInput" enterkeyhint="done" placeholder="예: 어제 삼성이로 쿠팡 충전기 삼만원 샀어">

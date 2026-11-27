@@ -128,5 +128,26 @@ assert.strictEqual(slimInst.interestMode, 'partial');
 assert.strictEqual(slimInst.freeMonths, 3);
 assert.strictEqual(slimInst.memo, '아이패드');
 
+// 발음 오인식 자동 교정 ('유의자' -> '유이자', '무의자' -> '무이자') 및 실시간 말바꾸기('~가 아니라 ~', '~ 말고 ~') 테스트
+const typoPaid = P.parseTransaction('노트북 120만원 6개월 유의자로 샀어', ctx);
+assert.strictEqual(typoPaid.interestMode, 'paid');
+assert.strictEqual(typoPaid.memo, '노트북');
+
+const corr1 = P.parseTransaction('노트북 120만원 6개월 유의자로 샀어 아 유의자가 아니라 유이자', ctx);
+assert.strictEqual(corr1.interestMode, 'paid');
+assert.strictEqual(corr1.memo, '노트북');
+
+const corr2 = P.parseTransaction('노트북 120만원 6개월 무이자로 샀어 아 무이자가 아니라 유이자', ctx);
+assert.strictEqual(corr2.interestMode, 'paid');
+assert.strictEqual(corr2.memo, '노트북');
+
+const corr3 = P.parseTransaction('떡볶이 만원 먹었어 아 만원이 아니라 만오천원', ctx);
+assert.strictEqual(corr3.amount, 15000);
+assert.strictEqual(corr3.memo, '떡볶이');
+
+const corr4 = P.parseTransaction('점심으로 김밥 말고 라면 만원 먹었어', ctx);
+assert.strictEqual(corr4.amount, 10000);
+assert.strictEqual(corr4.memo, '점심 라면');
+
 console.log('MULTI-TX TESTS PASSED!', JSON.stringify(multi1));
 console.log('ALL TESTS PASSED!');

@@ -38,10 +38,63 @@
     return total + section + num;
   }
 
-  // 자주 나오는 음성인식 띄어쓰기·동음이의어 보정
+  // 말하다가 즉석에서 고쳐 말하는 표현 처리 ("유의자가 아니라 유이자", "만원 말고 만오천원")
+  function applySelfCorrection(raw) {
+    let s = String(raw || '');
+    const numExpr = '(?:[0-9,.]+|[일이삼사오육칠팔구십백천만억]+)(?:\\s*(?:억|만|천|백|십|[0-9,.]+|[일이삼사오육칠팔구십백천만억]+))*\\s*(?:원|개월|%|프로|퍼센트)?(?![가-힣])';
+    const corrRe = new RegExp('([^\\s,]+(?:\\s+[^\\s,]+)?)\\s*(?:이|가|은|는)?\\s*(?:아니라|아니고|말고)\\s+(' + numExpr + '|\\S+)');
+    const isFiller = w => /^(?:아|어|음|아니|잠깐|잠깐만)$/.test(w);
+    const isNumTok = w => /^[0-9,.]+$|^[일이삼사오육칠팔구십백천만억]+$/.test(w);
+
+    for (let iter = 0; iter < 3; iter++) {
+      const m = s.match(corrRe);
+      if (!m) break;
+      const beforeRaw = s.slice(0, m.index);
+      const afterRaw = s.slice(m.index + m[0].length);
+      const rawX = m[1].trim();
+      const y = m[2].trim();
+      const xTokens = rawX.split(/\s+/);
+      const stripP = w => w.replace(/(?:으로|로|이|가|은|는)$/, '');
+      const x1 = stripP(xTokens[xTokens.length - 1]);
+      const x2 = (xTokens.length === 2 && !isFiller(xTokens[0])) ? stripP(rawX) : '';
+
+      let targetX = '';
+      if (x2 && x2.length >= 2 && beforeRaw.includes(x2)) targetX = x2;
+      else if (x1 && x1.length >= 1 && beforeRaw.includes(x1)) targetX = x1;
+
+      if (targetX) {
+        const prefixKeep = (xTokens.length === 2 && targetX === x1 && !isFiller(xTokens[0])) ? xTokens[0] + ' ' : '';
+        const cleanedBefore = beforeRaw.replace(/(?:^|\s)(?:아|어|음|아니|잠깐|잠깐만)\s*$/, ' ');
+        const lastIdx = cleanedBefore.lastIndexOf(targetX);
+        if (lastIdx >= 0) {
+          let endInBefore = lastIdx + targetX.length;
+          if (/(?:으로|로)$/.test(y)) {
+            const tr = cleanedBefore.slice(endInBefore).match(/^(?:으로|로)/);
+            if (tr) endInBefore += tr[0].length;
+          }
+          s = (cleanedBefore.slice(0, lastIdx) + y + cleanedBefore.slice(endInBefore) + ' ' + prefixKeep + afterRaw).replace(/\s+/g, ' ').trim();
+          continue;
+        }
+      }
+
+      const keepWord = (xTokens.length === 2 && !isFiller(xTokens[0]) && !isNumTok(xTokens[0])) ? xTokens[0] + ' ' : '';
+      s = (beforeRaw + keepWord + y + ' ' + afterRaw).replace(/\s+/g, ' ').trim();
+    }
+    return s;
+  }
+
+  // 자주 나오는 음성인식 띄어쓰기·동음이의어·발음 오인식 보정 + 즉석 말바꾸기 교정
   function normalizeSpeechText(raw) {
-    return String(raw || '')
+    const pre = String(raw || '')
       .replace(/11\s*[조도]/g, '십일조')
+      .replace(/유의\s*자|유\s+이자|유히\s*자/g, '유이자')
+      .replace(/무의\s*자|무\s+이자/g, '무이자')
+      .replace(/부분\s*무의\s*자/g, '부분무이자')
+      .replace(/일십\s*불|일시\s+불/g, '일시불')
+      .replace(/할\s+부/g, '할부')
+      .replace(/고정\s+비/g, '고정비')
+      .replace(/결재/g, '결제')
+      .replace(/형금|현\s+금/g, '현금')
       .replace(/스타\s+벅스/g, '스타벅스')
       .replace(/쿠팡\s+이츠/g, '쿠팡이츠')
       .replace(/배달의\s*민족/g, '배민')
@@ -54,6 +107,7 @@
       .replace(/빽\s+다방/g, '빽다방')
       .replace(/서브\s+웨이/g, '서브웨이')
       .replace(/카카오\s+택시/g, '카카오택시');
+    return applySelfCorrection(pre);
   }
 
   const CATEGORIES = {
